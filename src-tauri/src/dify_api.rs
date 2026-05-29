@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 
 use crate::models::*;
 
@@ -11,17 +11,28 @@ pub struct DifyApiClient {
 }
 
 impl DifyApiClient {
-    pub fn new(api_base: &str, api_key: &str) -> Self {
+    pub fn new(api_base: &str, api_key: &str, proxy: Option<&str>) -> Result<Self, String> {
         let base = api_base.trim_end_matches('/').to_string();
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
+        let mut builder = Client::builder()
+            .timeout(Duration::from_secs(30));
+
+        if let Some(proxy_url) = proxy {
+            let trimmed = proxy_url.trim();
+            if !trimmed.is_empty() {
+                let p = Proxy::all(trimmed)
+                    .map_err(|e| format!("代理配置无效 '{}': {}", trimmed, e))?;
+                builder = builder.proxy(p);
+            }
+        }
+
+        let client = builder
             .build()
-            .unwrap_or_else(|_| Client::new());
-        Self {
+            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+        Ok(Self {
             client,
             api_base: base,
             api_key: api_key.to_string(),
-        }
+        })
     }
 
     fn console_url(&self, path: &str) -> String {

@@ -4,6 +4,7 @@ import { Settings, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 export function ConfigPage() {
   const [apiBase, setApiBase] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [proxy, setProxy] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null);
   const [testMessage, setTestMessage] = useState('');
@@ -19,6 +20,7 @@ export function ConfigPage() {
       if (config) {
         setApiBase(config.api_base || '');
         setApiKey(config.api_key || '');
+        setProxy(config.proxy || '');
       }
     } catch (e) {
       // Config not found yet, that's OK
@@ -30,6 +32,7 @@ export function ConfigPage() {
       await (window as any).__TAURI__.invoke('save_config', {
         apiBase,
         apiKey,
+        proxy: proxy.trim() || null,
       });
       setSaved(true);
       setTestResult(null);
@@ -47,6 +50,7 @@ export function ConfigPage() {
       const result = await (window as any).__TAURI__.invoke('test_connection', {
         apiBase,
         apiKey,
+        proxy: proxy.trim() || null,
       });
       setTestResult('success');
       setTestMessage(`连接成功！发现 ${result} 个应用`);
@@ -100,6 +104,23 @@ export function ConfigPage() {
           />
           <p className="text-xs text-gray-400 mt-1">
             在 Dify 后台 → 设置 → API 扩展 中获取 Console API Token
+          </p>
+        </div>
+
+        {/* Proxy */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            网络代理（可选）
+          </label>
+          <input
+            type="text"
+            value={proxy}
+            onChange={(e) => setProxy(e.target.value)}
+            placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+          <p className="text-xs text-gray-400 mt-1">
+            如需通过代理访问 Dify，请填写代理地址。支持 HTTP 和 SOCKS5 代理，留空则直连
           </p>
         </div>
 

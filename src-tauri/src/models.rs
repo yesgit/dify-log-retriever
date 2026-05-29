@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct DifyConfig {
     pub api_base: String,
     pub api_key: String,
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 // ===== App =====

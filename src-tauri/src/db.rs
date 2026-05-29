@@ -93,6 +93,25 @@ impl Database {
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
             params!["api_key", &config.api_key],
         ).map_err(|e| e.to_string())?;
+        if let Some(ref proxy) = config.proxy {
+            let trimmed = proxy.trim();
+            if !trimmed.is_empty() {
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                    params!["proxy", trimmed],
+                ).map_err(|e| e.to_string())?;
+            } else {
+                conn.execute(
+                    "DELETE FROM settings WHERE key = 'proxy'",
+                    [],
+                ).map_err(|e| e.to_string())?;
+            }
+        } else {
+            conn.execute(
+                "DELETE FROM settings WHERE key = 'proxy'",
+                [],
+            ).map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -112,11 +131,19 @@ impl Database {
                 |row| row.get(0),
             )
             .ok();
+        let proxy: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'proxy'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
 
         match (api_base, api_key) {
             (Some(base), Some(key)) => Ok(Some(DifyConfig {
                 api_base: base,
                 api_key: key,
+                proxy,
             })),
             _ => Ok(None),
         }

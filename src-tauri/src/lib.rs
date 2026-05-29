@@ -19,14 +19,14 @@ fn get_config(state: State<AppState>) -> Result<Option<DifyConfig>, String> {
 }
 
 #[tauri::command]
-fn save_config(state: State<AppState>, api_base: String, api_key: String) -> Result<(), String> {
-    let config = DifyConfig { api_base, api_key };
+fn save_config(state: State<AppState>, api_base: String, api_key: String, proxy: Option<String>) -> Result<(), String> {
+    let config = DifyConfig { api_base, api_key, proxy };
     state.db.save_config(&config)
 }
 
 #[tauri::command]
-async fn test_connection(api_base: String, api_key: String) -> Result<usize, String> {
-    let client = DifyApiClient::new(&api_base, &api_key);
+async fn test_connection(api_base: String, api_key: String, proxy: Option<String>) -> Result<usize, String> {
+    let client = DifyApiClient::new(&api_base, &api_key, proxy.as_deref())?;
     let apps = client.fetch_apps().await?;
     Ok(apps.len())
 }
@@ -34,7 +34,7 @@ async fn test_connection(api_base: String, api_key: String) -> Result<usize, Str
 #[tauri::command]
 async fn fetch_apps_from_dify(state: State<'_, AppState>) -> Result<Vec<DifyApp>, String> {
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
-    let client = DifyApiClient::new(&config.api_base, &config.api_key);
+    let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
     let apps = client.fetch_apps().await?;
 
     for app in &apps {
@@ -69,7 +69,7 @@ async fn sync_app_data(
     app_id: String,
 ) -> Result<SyncResult, String> {
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
-    let client = DifyApiClient::new(&config.api_base, &config.api_key);
+    let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
 
     let mut total_conversations: i64 = 0;
     let mut synced_conversations: i64 = 0;
