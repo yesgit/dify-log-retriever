@@ -1,34 +1,30 @@
 [package]
 name = "dify-log-retriever"
 version = "0.1.0"
-description = "Dify conversation log retriever and evaluator export desktop app"
-authors = ["Dify Log Retriever Contributors"]
+description = "A desktop app for retrieving Dify conversation logs"
+authors = ["you"]
 edition = "2021"
 
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
 [lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "dify_log_retriever_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.0", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
-aes-gcm = "0.10"
-base64 = "0.22"
-chrono = { version = "0.4", features = ["serde"] }
-keyring = "2.3"
-rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2.0", features = [] }
-tauri-plugin-dialog = "2.0"
-thiserror = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-url = "2.5"
-uuid = { version = "1", features = ["v4"] }
-
-[dev-dependencies]
-tempfile = "3"
-httpmock = "0.7"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
