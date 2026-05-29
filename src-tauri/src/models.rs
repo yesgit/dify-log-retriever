@@ -9,6 +9,15 @@ pub struct DifyConfig {
     pub proxy: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifyConfigDisplay {
+    pub api_base: String,
+    pub api_key_masked: String,
+    #[serde(default)]
+    pub proxy: Option<String>,
+    pub has_key: bool,
+}
+
 // ===== App =====
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DifyApp {

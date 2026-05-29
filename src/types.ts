@@ -1,7 +1,18 @@
-// ===== Settings =====
+// ===== Page State =====
+export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'export';
+
+// ===== Config =====
 export interface DifyConfig {
   api_base: string;
   api_key: string;
+  proxy?: string;
+}
+
+export interface DifyConfigDisplay {
+  api_base: string;
+  api_key_masked: string;
+  proxy?: string;
+  has_key: boolean;
 }
 
 // ===== App =====
@@ -9,32 +20,34 @@ export interface DifyApp {
   id: string;
   name: string;
   description: string;
-  mode: string; // 'chat' | 'completion' | 'workflow'
+  mode: string; // 'chat' | 'completion' | 'workflow' | 'agent-chat'
   icon: string;
   icon_background: string;
   created_at: number;
 }
 
 // ===== Conversation =====
-export interface Conversation {
+export interface ConversationSummary {
   id: string;
   app_id: string;
   conversation_id: string;
   name: string;
-  inputs: Record<string, any>;
-  status: string;
-  introduction: string;
   created_at: number;
   updated_at: number;
-  _synced_at?: number;
+  message_count: number;
+  app_name: string;
+}
+
+export interface ConversationsResult {
+  data: ConversationSummary[];
+  total: number;
 }
 
 // ===== Message =====
-export interface Message {
+export interface MessageDetail {
   id: string;
-  app_id: string;
-  conversation_id: string;
   message_id: string;
+  conversation_id: string;
   query: string;
   answer: string;
   feedback: string | null; // 'like' | 'dislike' | null
@@ -43,22 +56,16 @@ export interface Message {
   agent_thoughts: any[];
   answer_tokens: number;
   prompt_tokens: number;
+  elapsed_time?: number;
   created_at: number;
-  _synced_at?: number;
 }
 
 // ===== Sync State =====
-export interface SyncState {
-  app_id: string;
-  app_name: string;
-  status: 'idle' | 'syncing' | 'completed' | 'error';
+export interface SyncResult {
   total_conversations: number;
   synced_conversations: number;
   total_messages: number;
   synced_messages: number;
-  error_message?: string;
-  started_at?: number;
-  completed_at?: number;
 }
 
 // ===== Dashboard Stats =====
@@ -71,8 +78,21 @@ export interface DashboardStats {
   feedback_like: number;
   feedback_dislike: number;
   feedback_none: number;
-  top_apps: { app_id: string; app_name: string; conversation_count: number; message_count: number }[];
-  recent_daily: { date: string; conversations: number; messages: number }[];
+  top_apps: AppRanking[];
+  recent_daily: DailyStats[];
+}
+
+export interface AppRanking {
+  app_id: string;
+  app_name: string;
+  conversation_count: number;
+  message_count: number;
+}
+
+export interface DailyStats {
+  date: string;
+  conversations: number;
+  messages: number;
 }
 
 // ===== Export Options =====
@@ -85,6 +105,3 @@ export interface ExportOptions {
   include_metadata: boolean;
   include_agent_thoughts: boolean;
 }
-
-// ===== Page State =====
-export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'export';

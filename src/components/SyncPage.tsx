@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { RefreshCw, Loader2, CheckCircle, XCircle, Play, Clock } from 'lucide-react';
-import type { DifyApp } from '../types';
+import type { DifyApp, SyncResult } from '../types';
 
 interface SyncStatus {
   app_id: string;
@@ -27,7 +28,7 @@ export function SyncPage() {
 
   const loadApps = async () => {
     try {
-      const result = await (window as any).__TAURI__.invoke('get_local_apps');
+      const result = await invoke<DifyApp[]>('get_local_apps');
       setApps(result || []);
     } catch (e) {
       console.error(e);
@@ -77,7 +78,7 @@ export function SyncPage() {
       });
 
       try {
-        const result = await (window as any).__TAURI__.invoke('sync_app_data', { appId });
+        const result = await invoke<SyncResult>('sync_app_data', { appId });
         setSyncStatuses((prev) => {
           const next = new Map(prev);
           next.set(appId, {
@@ -117,11 +118,6 @@ export function SyncPage() {
       default:
         return <Clock size={16} className="text-gray-300" />;
     }
-  };
-
-  const getProgressBar = (current: number, total: number) => {
-    if (total === 0) return 0;
-    return Math.round((current / total) * 100);
   };
 
   return (
@@ -214,14 +210,7 @@ export function SyncPage() {
                               消息: {status.synced_messages}/{status.total_messages}
                             </span>
                             {status.status === 'syncing' && (
-                              <div className="flex-1 bg-gray-200 rounded-full h-1.5 max-w-xs">
-                                <div
-                                  className="bg-blue-500 rounded-full h-1.5 transition-all"
-                                  style={{
-                                    width: `${getProgressBar(status.synced_conversations, status.total_conversations)}%`,
-                                  }}
-                                />
-                              </div>
+                              <span className="text-blue-500">同步中，请稍候...</span>
                             )}
                           </div>
                           {status.error_message && (

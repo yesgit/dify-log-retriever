@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { AppWindow, RefreshCw, Loader2, CheckCircle, Trash2 } from 'lucide-react';
 import type { DifyApp } from '../types';
 
@@ -13,7 +14,7 @@ export function AppsPage() {
 
   const loadApps = async () => {
     try {
-      const result = await (window as any).__TAURI__.invoke('get_local_apps');
+      const result = await invoke<DifyApp[]>('get_local_apps');
       setApps(result || []);
     } catch (e: any) {
       setError(e.toString());
@@ -24,7 +25,7 @@ export function AppsPage() {
     setLoading(true);
     setError('');
     try {
-      const result = await (window as any).__TAURI__.invoke('fetch_apps_from_dify', {});
+      const result = await invoke<DifyApp[]>('fetch_apps_from_dify');
       setApps(result || []);
     } catch (e: any) {
       setError(e.toString());
@@ -36,7 +37,7 @@ export function AppsPage() {
   const handleDeleteApp = async (appId: string) => {
     if (!confirm('确认删除该应用的本地数据？此操作不可恢复。')) return;
     try {
-      await (window as any).__TAURI__.invoke('delete_app_data', { appId });
+      await invoke('delete_app_data', { appId });
       loadApps();
     } catch (e: any) {
       setError(e.toString());

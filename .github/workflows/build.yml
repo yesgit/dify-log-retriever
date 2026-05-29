@@ -3,6 +3,18 @@ name: Build Desktop App
 on:
   workflow_dispatch:
     inputs:
+      build_linux:
+        description: '构建 Linux 版本'
+        type: boolean
+        default: true
+      build_macos:
+        description: '构建 macOS 版本'
+        type: boolean
+        default: true
+      build_windows:
+        description: '构建 Windows 版本'
+        type: boolean
+        default: true
       create_release:
         description: '是否创建 GitHub Release（需要填写版本号）'
         type: boolean
@@ -20,20 +32,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ "${{ inputs.build_linux }}" != "true" ] && \
+             [ "${{ inputs.build_macos }}" != "true" ] && \
+             [ "${{ inputs.build_windows }}" != "true" ]; then
+            echo "❌ 错误：至少需要选择一个平台进行构建"
+            exit 1
+          fi
+
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          platforms=()
+          if [ "${{ inputs.build_linux }}" = "true" ]; then
+            platforms+=('{"platform":"ubuntu-22.04"}')
+          fi
+          if [ "${{ inputs.build_macos }}" = "true" ]; then
+            platforms+=('{"platform":"macos-latest"}')
+          fi
+          if [ "${{ inputs.build_windows }}" = "true" ]; then
+            platforms+=('{"platform":"windows-latest"}')
+          fi
+
+          # Build JSON array
+          matrix=$(echo "${platforms[*]}" | sed 's/ /,/g')
+          echo "matrix={\"include\":[$matrix]}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: ubuntu-22.04
-          - platform: macos-latest
-          - platform: windows-latest
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     runs-on: ${{ matrix.platform }}
     name: Build on ${{ matrix.platform }}
 
     steps:
-      - name: Validate inputs
+      - name: Validate release inputs
         if: inputs.create_release && inputs.version == ''
         run: |
           echo "❌ 错误：勾选了创建 Release 但未填写版本号"

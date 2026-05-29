@@ -14,18 +14,32 @@ struct AppState {
 }
 
 #[tauri::command]
-fn get_config(state: State<AppState>) -> Result<Option<DifyConfig>, String> {
-    state.db.get_config()
+fn get_config(state: State<AppState>) -> Result<Option<DifyConfigDisplay>, String> {
+    state.db.get_config_display()
 }
 
 #[tauri::command]
 fn save_config(state: State<AppState>, api_base: String, api_key: String, proxy: Option<String>) -> Result<(), String> {
-    let config = DifyConfig { api_base, api_key, proxy };
+    // If the frontend sends __KEEP_EXISTING__, keep the old key
+    let actual_key = if api_key == "__KEEP_EXISTING__" {
+        let existing = state.db.get_config()?;
+        match existing {
+            Some(c) if !c.api_key.is_empty() => c.api_key,
+            _ => return Err("当前没有已保存的 API Token，请输入新的 Token".to_string()),
+        }
+    } else {
+        api_key
+    };
+    let config = DifyConfig { api_base, api_key: actual_key, proxy };
     state.db.save_config(&config)
 }
 
 #[tauri::command]
 async fn test_connection(api_base: String, api_key: String, proxy: Option<String>) -> Result<usize, String> {
+    // If key is masked placeholder, we can't test without the real key
+    if api_key == "__KEEP_EXISTING__" {
+        return Err("请重新输入 API Token 后再测试连接".to_string());
+    }
     let client = DifyApiClient::new(&api_base, &api_key, proxy.as_deref())?;
     let apps = client.fetch_apps().await?;
     Ok(apps.len())
@@ -175,7 +189,15 @@ fn export_data(
         _ => return Err(format!("不支持的格式: {}", format)),
     };
 
-    export::save_export_file(&content, &format)
+    let ext = format;
+    let default_filename = format!("dify_export_{}.{}", chrono::Local::now().format("%Y%m%d_%H%M%S"), ext);
+
+    export::save_export_file_with_dialog(&content, &default_filename, &ext)
+}
+
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -200,6 +222,7 @@ pub fn run() {
             get_messages,
             get_dashboard_stats,
             export_data,
+            get_app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

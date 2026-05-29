@@ -1,18 +1,7 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { BarChart3, MessageSquare, Users, Zap, ThumbsUp, ThumbsDown, Minus, TrendingUp } from 'lucide-react';
-
-interface DashboardStats {
-  total_apps: number;
-  total_conversations: number;
-  total_messages: number;
-  total_answer_tokens: number;
-  total_prompt_tokens: number;
-  feedback_like: number;
-  feedback_dislike: number;
-  feedback_none: number;
-  top_apps: { app_id: string; app_name: string; conversation_count: number; message_count: number }[];
-  recent_daily: { date: string; conversations: number; messages: number }[];
-}
+import type { DashboardStats } from '../types';
 
 export function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -24,7 +13,7 @@ export function DashboardPage() {
 
   const loadStats = async () => {
     try {
-      const result = await (window as any).__TAURI__.invoke('get_dashboard_stats');
+      const result = await invoke<DashboardStats>('get_dashboard_stats');
       setStats(result);
     } catch (e) {
       console.error(e);

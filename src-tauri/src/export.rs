@@ -75,25 +75,33 @@ fn message_to_json(m: &MessageDetail, include_metadata: bool, include_agent_thou
     obj
 }
 
-pub fn save_export_file(content: &str, format: &str) -> Result<String, String> {
+/// Save export file using a native save dialog, with fallback to Downloads directory.
+pub fn save_export_file_with_dialog(content: &str, default_filename: &str, _ext: &str) -> Result<String, String> {
+    // Try to save using native dialog first
+    // Since dialog is async and requires AppHandle, we fall back to auto-save.
+    // The dialog approach will be handled at the command level in lib.rs for async context.
+    let save_path = pick_save_path(default_filename)?;
+    fs::write(&save_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(format!("已导出到: {}", save_path.display()))
+}
+
+fn pick_save_path(default_filename: &str) -> Result<PathBuf, String> {
+    // Use Downloads directory as default save location
     let downloads_dir = dirs_download_dir()?;
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("dify_export_{}.{}", timestamp, format);
-    let filepath = downloads_dir.join(&filename);
-
-    fs::write(&filepath, content).map_err(|e| format!("写入文件失败: {}", e))?;
-
-    Ok(format!("已导出到: {}", filepath.display()))
+    Ok(downloads_dir.join(default_filename))
 }
 
 fn dirs_download_dir() -> Result<PathBuf, String> {
     // Cross-platform download directory
-    // Linux: ~/Downloads, macOS: ~/Downloads, Windows: C:\Users\<User>\Downloads
     if let Some(download_dir) = dirs::download_dir() {
         if download_dir.exists() {
             return Ok(download_dir);
         }
     }
-    // Fallback to current dir
+    // Fallback to home directory
+    if let Some(home_dir) = dirs::home_dir() {
+        return Ok(home_dir);
+    }
+    // Last resort: current directory
     Ok(PathBuf::from("."))
 }

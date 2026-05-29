@@ -1,4 +1,6 @@
+import { useState, useEffect } from 'react';
 import { type Page } from '../types';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Settings,
   AppWindow,
@@ -25,6 +27,12 @@ const navItems: { page: Page; label: string; icon: React.ReactNode }[] = [
 ];
 
 export function Layout({ currentPage, onNavigate, children }: LayoutProps) {
+  const [version, setVersion] = useState('...');
+
+  useEffect(() => {
+    invoke<string>('get_app_version').then(setVersion).catch(() => setVersion(''));
+  }, []);
+
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
@@ -60,7 +68,7 @@ export function Layout({ currentPage, onNavigate, children }: LayoutProps) {
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-gray-200">
-          <p className="text-xs text-gray-400">v0.1.0</p>
+          <p className="text-xs text-gray-400">v{version}</p>
         </div>
       </aside>
 

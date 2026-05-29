@@ -1,31 +1,7 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { MessageSquare, Search, ChevronLeft, ChevronRight, User, Clock, ThumbsUp, ThumbsDown, Minus, Loader2 } from 'lucide-react';
-
-interface ConversationSummary {
-  id: string;
-  app_id: string;
-  conversation_id: string;
-  name: string;
-  created_at: number;
-  updated_at: number;
-  message_count: number;
-  app_name: string;
-}
-
-interface MessageDetail {
-  id: string;
-  message_id: string;
-  query: string;
-  answer: string;
-  feedback: string | null;
-  answer_tokens: number;
-  prompt_tokens: number;
-  created_at: number;
-  agent_thoughts: any[];
-  retriever_resources: any[];
-  message_metadata: Record<string, any>;
-  elapsed_time?: number;
-}
+import type { ConversationSummary, MessageDetail, ConversationsResult } from '../types';
 
 export function ConversationsPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -38,6 +14,7 @@ export function ConversationsPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(false);
   const [msgLoading, setMsgLoading] = useState(false);
+  const [searchTrigger, setSearchTrigger] = useState(0);
   const pageSize = 20;
 
   useEffect(() => {
@@ -46,12 +23,12 @@ export function ConversationsPage() {
 
   useEffect(() => {
     loadConversations();
-  }, [page, selectedApp]);
+  }, [page, selectedApp, searchTrigger]);
 
   const loadApps = async () => {
     try {
-      const result = await (window as any).__TAURI__.invoke('get_local_apps');
-      setApps((result || []).map((a: any) => ({ id: a.id, name: a.name })));
+      const result = await invoke<{ id: string; name: string }[]>('get_local_apps');
+      setApps((result || []).map((a) => ({ id: a.id, name: a.name })));
     } catch (e) {
       console.error(e);
     }
@@ -60,7 +37,7 @@ export function ConversationsPage() {
   const loadConversations = async () => {
     setLoading(true);
     try {
-      const result = await (window as any).__TAURI__.invoke('get_conversations', {
+      const result = await invoke<ConversationsResult>('get_conversations', {
         appId: selectedApp || null,
         keyword: searchKeyword || null,
         page,
@@ -79,7 +56,7 @@ export function ConversationsPage() {
     setSelectedConversation(conversationId);
     setMsgLoading(true);
     try {
-      const result = await (window as any).__TAURI__.invoke('get_messages', {
+      const result = await invoke<MessageDetail[]>('get_messages', {
         conversationId,
       });
       setMessages(result || []);
@@ -92,7 +69,7 @@ export function ConversationsPage() {
 
   const handleSearch = () => {
     setPage(1);
-    loadConversations();
+    setSearchTrigger((prev) => prev + 1);
   };
 
   const formatTime = (ts: number) => {
@@ -258,7 +235,7 @@ export function ConversationsPage() {
                           <span className="text-xs text-gray-400">
                             Tokens: {formatTokens(msg.prompt_tokens)}+{formatTokens(msg.answer_tokens)}
                           </span>
-                          {msg.elapsed_time && (
+                          {msg.elapsed_time != null && msg.elapsed_time > 0 && (
                             <span className="text-xs text-gray-400">
                               {msg.elapsed_time.toFixed(2)}s
                             </span>
@@ -267,7 +244,7 @@ export function ConversationsPage() {
                       </div>
                       <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.answer}</p>
                       {/* Agent Thoughts */}
-                      {msg.agent_thoughts && msg.agent_thoughts.length > 0 && (
+                      {msg.agent_thoughts && Array.isArray(msg.agent_thoughts) && msg.agent_thoughts.length > 0 && (
                         <div className="mt-2 p-2 bg-gray-50 rounded text-xs">
                           <p className="font-medium text-gray-500 mb-1">思维链 ({msg.agent_thoughts.length} 步)</p>
                           {msg.agent_thoughts.map((thought: any, i: number) => (
@@ -279,7 +256,7 @@ export function ConversationsPage() {
                         </div>
                       )}
                       {/* Retriever Resources */}
-                      {msg.retriever_resources && msg.retriever_resources.length > 0 && (
+                      {msg.retriever_resources && Array.isArray(msg.retriever_resources) && msg.retriever_resources.length > 0 && (
                         <div className="mt-2 p-2 bg-green-50 rounded text-xs">
                           <p className="font-medium text-green-600 mb-1">
                             引用资源 ({msg.retriever_resources.length})

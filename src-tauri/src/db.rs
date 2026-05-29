@@ -4,6 +4,13 @@ use std::sync::Mutex;
 
 use crate::models::*;
 
+fn mask_api_key(key: &str) -> String {
+    if key.len() <= 8 {
+        return "*".repeat(key.len());
+    }
+    format!("{}****{}", &key[..4], &key[key.len()-4..])
+}
+
 pub struct Database {
     pub conn: Mutex<Connection>,
 }
@@ -147,6 +154,19 @@ impl Database {
             })),
             _ => Ok(None),
         }
+    }
+
+    pub fn get_config_display(&self) -> Result<Option<DifyConfigDisplay>, String> {
+        let config = self.get_config()?;
+        Ok(config.map(|c| {
+            let masked = mask_api_key(&c.api_key);
+            DifyConfigDisplay {
+                api_base: c.api_base,
+                api_key_masked: masked,
+                proxy: c.proxy,
+                has_key: !c.api_key.is_empty(),
+            }
+        }))
     }
 
     // ===== Apps =====

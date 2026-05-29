@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Download, FileJson, FileSpreadsheet, FileText, Loader2, CheckCircle } from 'lucide-react';
+import type { DifyApp } from '../types';
 
 export function ExportPage() {
   const [apps, setApps] = useState<{ id: string; name: string }[]>([]);
@@ -20,8 +22,8 @@ export function ExportPage() {
 
   const loadApps = async () => {
     try {
-      const result = await (window as any).__TAURI__.invoke('get_local_apps');
-      setApps((result || []).map((a: any) => ({ id: a.id, name: a.name })));
+      const result = await invoke<DifyApp[]>('get_local_apps');
+      setApps((result || []).map((a) => ({ id: a.id, name: a.name })));
     } catch (e) {
       console.error(e);
     } finally {
@@ -33,7 +35,7 @@ export function ExportPage() {
     setExporting(true);
     setExportResult(null);
     try {
-      const result = await (window as any).__TAURI__.invoke('export_data', {
+      const result = await invoke<string>('export_data', {
         format,
         appId: selectedApp || null,
         startDate: startDate || null,
