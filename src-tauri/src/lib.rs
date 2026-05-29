@@ -1518,6 +1518,7 @@ fn to_string<E: std::fmt::Display>(err: E) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::{Method::GET, MockServer};
     use tempfile::tempdir;
 
     #[test]
@@ -1587,5 +1588,189 @@ mod tests {
         let file = File::create(&request.output_path).unwrap();
         let mut writer = BufWriter::new(file);
         assert_eq!(export_node_rows(&conn, &request, &mut writer).unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_with_mock_api_persists_conversation_message_run_and_nodes() {
+        let dir = tempdir().unwrap();
+        let state = AppState {
+            db_path: dir.path().join("test.sqlite"),
+            key_fallback_path: dir.path().join(".token-key"),
+        };
+        init_db(&state.db_path).unwrap();
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/console/api/apps/app-1/chat-conversations")
+                .query_param("page", "1")
+                .query_param("limit", "100");
+            then.status(200).json_body(json!({
+                "data": [{
+                    "id": "conversation-1",
+                    "name": "测试会话",
+                    "summary": "用户问题",
+                    "status": "normal",
+                    "message_count": 1,
+                    "created_at": 100,
+                    "updated_at": 110
+                }],
+                "has_more": false
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/console/api/apps/app-1/chat-conversations/conversation-1");
+            then.status(200).json_body(json!({
+                "id": "conversation-1",
+                "message_count": 1,
+                "created_at": 100,
+                "updated_at": 110
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/console/api/apps/app-1/chat-messages")
+                .query_param("conversation_id", "conversation-1")
+                .query_param("limit", "100");
+            then.status(200).json_body(json!({
+                "data": [{
+                    "id": "message-1",
+                    "conversation_id": "conversation-1",
+                    "query": "q",
+                    "answer": "a",
+                    "workflow_run_id": "run-1",
+                    "created_at": 101,
+                    "status": "success"
+                }],
+                "has_more": false
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/console/api/apps/app-1/workflow-runs/run-1");
+            then.status(200).json_body(json!({
+                "id": "run-1",
+                "status": "succeeded",
+                "created_at": 101,
+                "finished_at": 103
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/console/api/apps/app-1/workflow-runs/run-1/node-executions");
+            then.status(200).json_body(json!({
+                "data": [
+                    {
+                        "id": "node-llm-1",
+                        "node_id": "llm-node",
+                        "node_type": "llm",
+                        "title": "LLM",
+                        "inputs": {"prompt": "q"},
+                        "outputs": {"text": "a"},
+                        "created_at": 102,
+                        "status": "succeeded"
+                    },
+                    {
+                        "id": "node-code-1",
+                        "node_id": "code-node",
+                        "node_type": "code",
+                        "created_at": 102,
+                        "status": "succeeded"
+                    }
+                ],
+                "has_more": false
+            }));
+        });
+
+        let encrypted_token = {
+            let key = load_or_create_master_key(&state).unwrap();
+            encrypt_token("test-token", &key).unwrap()
+        };
+        {
+            let conn = Connection::open(&state.db_path).unwrap();
+            conn.execute(
+                "INSERT INTO apps (id, name, base_url, dify_app_id, encrypted_token, created_at, updated_at)
+                 VALUES (1, 'A', ?1, 'app-1', ?2, 'now', 'now')",
+                params![server.base_url(), encrypted_token],
+            )
+            .unwrap();
+        }
+
+        let config = {
+            let conn = Connection::open(&state.db_path).unwrap();
+            get_app_config(&conn, 1).unwrap()
+        };
+        let mut counters = SyncCounters::default();
+        run_sync(
+            &state,
+            &config,
+            &SyncRequest {
+                app_config_id: 1,
+                start: None,
+                end: None,
+            },
+            &mut counters,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(counters.conversations, 1);
+        assert_eq!(counters.messages, 1);
+        assert_eq!(counters.workflow_runs, 1);
+        assert_eq!(counters.node_executions, 2);
+
+        let conn = Connection::open(&state.db_path).unwrap();
+        assert_eq!(table_count(&conn, "conversations"), 1);
+        assert_eq!(table_count(&conn, "messages"), 1);
+        assert_eq!(table_count(&conn, "workflow_runs"), 1);
+        assert_eq!(table_count(&conn, "node_executions"), 2);
+    }
+
+    #[test]
+    fn same_dify_ids_are_isolated_by_app_config_id() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("test.sqlite");
+        init_db(&db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        conn.execute(
+            "INSERT INTO apps (id, name, base_url, dify_app_id, encrypted_token, created_at, updated_at)
+             VALUES (1, 'A', 'https://a.example.com', 'app', '{}', 'now', 'now'),
+                    (2, 'B', 'https://b.example.com', 'app', '{}', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+
+        let conv = json!({"id":"same-conversation","name":"C"});
+        let msg =
+            json!({"id":"same-message","query":"q","answer":"a","workflow_run_id":"same-run"});
+        let run = json!({"id":"same-run","status":"succeeded"});
+        let node = json!({"id":"same-node","node_type":"llm","node_id":"llm"});
+        for app_id in [1, 2] {
+            upsert_conversation(&conn, app_id, &conv, None).unwrap();
+            upsert_message(&conn, app_id, "same-conversation", &msg).unwrap();
+            upsert_workflow_run(&conn, app_id, &run).unwrap();
+            upsert_node_execution(
+                &conn,
+                app_id,
+                "same-run",
+                Some("same-message"),
+                Some("same-conversation"),
+                &node,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(table_count(&conn, "conversations"), 2);
+        assert_eq!(table_count(&conn, "messages"), 2);
+        assert_eq!(table_count(&conn, "workflow_runs"), 2);
+        assert_eq!(table_count(&conn, "node_executions"), 2);
+    }
+
+    fn table_count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
     }
 }
