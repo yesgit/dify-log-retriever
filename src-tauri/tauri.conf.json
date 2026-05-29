@@ -22,7 +22,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm"],
+    "targets": ["deb", "rpm", "dmg", "msi", "nsis"],
     "icon": ["icons/icon.png"]
   }
 }

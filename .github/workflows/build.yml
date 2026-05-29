@@ -1,0 +1,93 @@
+name: Build Desktop App
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: '是否创建 GitHub Release（需要填写版本号）'
+        type: boolean
+        default: false
+      version:
+        description: '版本号（如 v0.1.0，创建 Release 时必填）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+          - platform: macos-latest
+          - platform: windows-latest
+
+    runs-on: ${{ matrix.platform }}
+    name: Build on ${{ matrix.platform }}
+
+    steps:
+      - name: Validate inputs
+        if: inputs.create_release && inputs.version == ''
+        run: |
+          echo "❌ 错误：勾选了创建 Release 但未填写版本号"
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: npx tauri
+          tagName: ${{ inputs.create_release && inputs.version || '' }}
+          releaseName: ${{ inputs.create_release && format('Dify Log Retriever {0}', inputs.version) || '' }}
+          releaseDraft: true
+          prerelease: false
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DifyLogRetriever-${{ matrix.platform }}
+          path: src-tauri/target/release/bundle/
+          if-no-files-found: warn
