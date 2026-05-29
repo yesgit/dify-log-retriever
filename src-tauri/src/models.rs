@@ -101,15 +101,18 @@ impl From<Message> for MessageDetail {
 // ===== Dify API Response Types =====
 #[derive(Debug, Deserialize)]
 pub struct DifyAppsResponse {
+    #[serde(default)]
     pub data: Vec<DifyAppItem>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DifyAppItem {
     pub id: String,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub mode: String,
     #[serde(default)]
     pub icon: String,
@@ -121,19 +124,24 @@ pub struct DifyAppItem {
 
 #[derive(Debug, Deserialize)]
 pub struct DifyConversationsResponse {
+    #[serde(default)]
     pub data: Vec<DifyConversationItem>,
+    #[serde(default)]
     pub has_more: bool,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DifyConversationItem {
     pub id: String,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub inputs: serde_json::Value,
+    #[serde(default)]
     pub status: String,
     #[serde(default)]
     pub introduction: String,
+    #[serde(default)]
     pub created_at: i64,
     #[serde(default)]
     pub updated_at: i64,
@@ -141,7 +149,9 @@ pub struct DifyConversationItem {
 
 #[derive(Debug, Deserialize)]
 pub struct DifyMessagesResponse {
+    #[serde(default)]
     pub data: Vec<DifyMessageItem>,
+    #[serde(default)]
     #[allow(dead_code)]
     pub has_more: bool,
 }
@@ -154,6 +164,7 @@ pub struct DifyMessageItem {
     pub conversation_id: String,
     #[serde(default)]
     pub query: String,
+    #[serde(default)]
     pub answer: String,
     #[serde(default)]
     pub feedback: Option<DifyFeedback>,
@@ -169,6 +180,7 @@ pub struct DifyMessageItem {
     pub prompt_tokens: i64,
     #[serde(default)]
     pub elapsed_time: f64,
+    #[serde(default)]
     pub created_at: i64,
 }
 

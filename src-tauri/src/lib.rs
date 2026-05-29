@@ -49,7 +49,7 @@ async fn test_connection(api_base: String, api_key: String, proxy: Option<String
 async fn fetch_apps_from_dify(state: State<'_, AppState>) -> Result<Vec<DifyApp>, String> {
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
-    let apps = client.fetch_apps().await?;
+    let apps = client.fetch_all_apps().await?;
 
     for app in &apps {
         let local_app = DifyApp {
@@ -89,11 +89,10 @@ async fn sync_app_data(
     let mut synced_conversations: i64 = 0;
     let mut total_messages: i64 = 0;
     let mut synced_messages: i64 = 0;
-    let mut cursor: Option<String> = None;
+    let mut page: i64 = 1;
 
     loop {
-        let cursor_ref = cursor.as_deref();
-        let conv_resp = client.fetch_conversations(&app_id, 100, cursor_ref).await?;
+        let conv_resp = client.fetch_conversations(&app_id, 100, page).await?;
         total_conversations += conv_resp.data.len() as i64;
 
         for conv in &conv_resp.data {
@@ -112,12 +111,7 @@ async fn sync_app_data(
         }
 
         if conv_resp.has_more {
-            // Use last conversation id as cursor
-            if let Some(last) = conv_resp.data.last() {
-                cursor = Some(last.id.clone());
-            } else {
-                break;
-            }
+            page += 1;
         } else {
             break;
         }
@@ -161,6 +155,7 @@ fn get_dashboard_stats(state: State<AppState>) -> Result<DashboardStats, String>
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn export_data(
     state: State<AppState>,
     format: String,

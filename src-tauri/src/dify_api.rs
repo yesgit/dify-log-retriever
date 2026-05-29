@@ -39,13 +39,14 @@ impl DifyApiClient {
         format!("{}/console/api{}", self.api_base, path)
     }
 
-    // ===== Test Connection (fetch apps) =====
+    // ===== Test Connection (fetch apps, first page only) =====
     pub async fn fetch_apps(&self) -> Result<Vec<DifyAppItem>, String> {
         let url = self.console_url("/apps");
         let resp = self
             .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
             .send()
             .await
             .map_err(|e| format!("请求失败: {}", e))?;
@@ -64,23 +65,68 @@ impl DifyApiClient {
         Ok(result.data)
     }
 
+    // ===== Fetch All Apps (with pagination) =====
+    pub async fn fetch_all_apps(&self) -> Result<Vec<DifyAppItem>, String> {
+        let mut all_apps: Vec<DifyAppItem> = Vec::new();
+        let mut page: i64 = 1;
+        let limit: i64 = 100;
+
+        loop {
+            let url = self.console_url("/apps");
+            let resp = self
+                .client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .query(&[
+                    ("limit", limit.to_string()),
+                    ("page", page.to_string()),
+                ])
+                .send()
+                .await
+                .map_err(|e| format!("请求应用列表失败: {}", e))?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("获取应用列表失败 ({}): {}", status, body));
+            }
+
+            let result: DifyAppsResponse = resp
+                .json()
+                .await
+                .map_err(|e| format!("解析应用列表失败: {}", e))?;
+
+            let fetched_count = result.data.len();
+            all_apps.extend(result.data);
+
+            if fetched_count < limit as usize {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(all_apps)
+    }
+
     // ===== Fetch Conversations for an App =====
     pub async fn fetch_conversations(
         &self,
         app_id: &str,
         limit: i64,
-        cursor: Option<&str>,
+        page: i64,
     ) -> Result<DifyConversationsResponse, String> {
-        let url = self.console_url(&format!("/apps/{}/conversations", app_id));
-        let mut req = self
+        let url = self.console_url(&format!("/apps/{}/chat-conversations", app_id));
+        let req = self
             .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .query(&[("limit", limit.to_string())]);
-
-        if let Some(c) = cursor {
-            req = req.query(&[("cursor", c)]);
-        }
+            .header("Content-Type", "application/json")
+            .query(&[
+                ("limit", limit.to_string()),
+                ("page", page.to_string()),
+                ("sort_by", "-created_at".to_string()),
+            ]);
 
         let resp = req
             .send()
@@ -112,11 +158,12 @@ impl DifyApiClient {
         let mut cursor: Option<String> = None;
 
         loop {
-            let url = self.console_url(&format!("/apps/{}/messages", app_id));
+            let url = self.console_url(&format!("/apps/{}/chat-messages", app_id));
             let mut req = self
                 .client
                 .get(&url)
                 .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
                 .query(&[
                     ("conversation_id", conversation_id),
                     ("limit", &limit.to_string()),
