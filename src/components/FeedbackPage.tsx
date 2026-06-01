@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
+import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
 import {
   ThumbsUp,
   ThumbsDown,
@@ -16,6 +17,8 @@ import {
   FileText,
   X,
   MessageCircle,
+  FolderOpen,
+  ExternalLink,
 } from 'lucide-react';
 import type { FeedbackMessage, FeedbackResult } from '../types';
 
@@ -32,6 +35,7 @@ export function FeedbackPage() {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
+  const [exportPath, setExportPath] = useState<string | null>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
   const pageSize = 20;
   const exportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -119,6 +123,7 @@ export function FeedbackPage() {
   const handleExport = async (format: string) => {
     setExporting(true);
     setExportMsg(null);
+    setExportPath(null);
     try {
       const ext = format;
       const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
@@ -148,14 +153,39 @@ export function FeedbackPage() {
         savePath,
       });
       setExportMsg(msg);
+      setExportPath(savePath);
     } catch (e: any) {
       setExportMsg(`导出失败: ${e}`);
+      setExportPath(null);
     } finally {
       setExporting(false);
       if (exportTimerRef.current) {
         clearTimeout(exportTimerRef.current);
       }
-      exportTimerRef.current = setTimeout(() => setExportMsg(null), 5000);
+      exportTimerRef.current = setTimeout(() => {
+        setExportMsg(null);
+        setExportPath(null);
+      }, 15000);
+    }
+  };
+
+  const handleOpenFolder = async () => {
+    if (exportPath) {
+      try {
+        await revealItemInDir(exportPath);
+      } catch (e) {
+        console.error('打开文件夹失败:', e);
+      }
+    }
+  };
+
+  const handleOpenFile = async () => {
+    if (exportPath) {
+      try {
+        await openPath(exportPath);
+      } catch (e) {
+        console.error('打开文件失败:', e);
+      }
     }
   };
 
@@ -249,12 +279,42 @@ export function FeedbackPage() {
           JSON
         </button>
         {exporting && <Loader2 size={16} className="animate-spin text-blue-500" />}
-        {exportMsg && (
-          <span className={`text-xs ${exportMsg.startsWith('导出失败') ? 'text-red-500' : 'text-green-600'}`}>
-            {exportMsg}
-          </span>
-        )}
       </div>
+
+      {/* Export Result with action buttons */}
+      {exportMsg && (
+        <div className={`flex items-center gap-2 mb-4 px-4 py-2.5 rounded-lg text-sm ${
+          exportMsg.startsWith('导出失败')
+            ? 'bg-red-50 text-red-700 border border-red-200'
+            : 'bg-green-50 text-green-700 border border-green-200'
+        }`}>
+          <span className="flex-1">{exportMsg}</span>
+          {exportPath && !exportMsg.startsWith('导出失败') && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={handleOpenFolder}
+                className="px-2.5 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1 transition-colors"
+              >
+                <FolderOpen size={12} />
+                打开文件夹
+              </button>
+              <button
+                onClick={handleOpenFile}
+                className="px-2.5 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1 transition-colors"
+              >
+                <ExternalLink size={12} />
+                打开文件
+              </button>
+            </div>
+          )}
+          <button
+            onClick={() => { setExportMsg(null); setExportPath(null); }}
+            className="p-0.5 text-gray-400 hover:text-gray-600 shrink-0"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Feedback List - Full Width */}
       <div className="flex-1 flex flex-col bg-white rounded-xl border border-gray-200 overflow-hidden min-h-0">
