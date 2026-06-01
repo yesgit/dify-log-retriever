@@ -1153,7 +1153,11 @@ impl Database {
         let conv_where = build_conv_where(app_id, start_time, end_time);
 
         // ── Basic counts ──
-        let total_apps: i64 = conn.query_row("SELECT COUNT(*) FROM apps", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        let total_apps: i64 = if let Some(aid) = app_id {
+            conn.query_row("SELECT COUNT(*) FROM apps WHERE id = ?1", params![aid], |row| row.get(0)).unwrap_or(1)
+        } else {
+            conn.query_row("SELECT COUNT(*) FROM apps", [], |row| row.get(0)).map_err(|e| e.to_string())?
+        };
 
         let total_conversations: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM conversations c WHERE {}", conv_where),
@@ -1242,10 +1246,14 @@ impl Database {
         let feedback_total = feedback_like + feedback_dislike;
         let feedback_like_rate = if feedback_total > 0 { feedback_like as f64 / feedback_total as f64 * 100.0 } else { 0.0 };
 
-        // Feedback with content: feedbacks JSON array has at least one item with content
+        // Feedback with content: feedbacks JSON array has at least one item with non-empty rating (label) or content
         let feedback_with_content: i64 = conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM messages WHERE feedback IS NOT NULL AND json_array_length(feedbacks) > 0 AND {}",
+                "SELECT COUNT(*) FROM messages WHERE feedback IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM json_each(feedbacks) WHERE
+                        (json_extract(value, '$.rating') IS NOT NULL AND json_extract(value, '$.rating') != '')
+                        OR (json_extract(value, '$.content') IS NOT NULL AND json_extract(value, '$.content') != '')
+                ) AND {}",
                 msg_where
             ),
             [],
@@ -1258,7 +1266,7 @@ impl Database {
 
         // ── Error stats ──
         let error_count: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM messages WHERE error IS NOT NULL AND error != 'null' AND error != '' AND {}", msg_where),
+            &format!("SELECT COUNT(*) FROM messages WHERE ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') AND {}", msg_where),
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
@@ -1328,6 +1336,21 @@ impl Database {
             ),
         )?;
 
+        // ── Feedback label stats ──
+        let feedback_label_sql = format!(
+            "SELECT COALESCE(feedback, 'none') as fb_label, COUNT(*) as cnt FROM messages WHERE {} GROUP BY fb_label ORDER BY cnt DESC",
+            msg_where
+        );
+        let mut stmt = conn.prepare(&feedback_label_sql).map_err(|e| e.to_string())?;
+        let feedback_label_stats: Vec<FeedbackLabelStat> = stmt.query_map([], |row| {
+            Ok(FeedbackLabelStat {
+                feedback: row.get(0)?,
+                count: row.get(1)?,
+            })
+        }).map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
         // ── Top apps ──
         let top_apps_sql = format!(
             "SELECT c.app_id, a.name, COUNT(DISTINCT c.conversation_id) as conv_count, COUNT(m.id) as msg_count
@@ -1353,27 +1376,53 @@ impl Database {
         .collect();
 
         // ── Daily trend ──
-        let mut stmt = conn.prepare(
-            &format!(
-                "SELECT date(created_at, 'unixepoch', 'localtime') as day,
-                 COUNT(DISTINCT conversation_id) as conv_count,
-                 COUNT(*) as msg_count,
-                 COALESCE(SUM(answer_tokens + prompt_tokens), 0) as token_sum,
-                 SUM(CASE WHEN query != '' THEN 1 ELSE 0 END) as query_count
-                 FROM messages
-                WHERE {}
-                GROUP BY day
-                ORDER BY day ASC",
-                msg_where
-            ),
-        ).map_err(|e| e.to_string())?;
+        let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
+
+        // For daily users, join messages with conversations
+        let daily_users_sql = format!(
+            "SELECT date(m.created_at, 'unixepoch', 'localtime') as day,
+                    COUNT(DISTINCT c.from_end_user_id) as user_count
+             FROM messages m
+             INNER JOIN conversations c ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id
+             WHERE {} AND c.from_end_user_id IS NOT NULL AND c.from_end_user_id != ''
+             GROUP BY day",
+            msg_where_m
+        );
+        // Build a map of date -> user count
+        let mut daily_users_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        if let Ok(mut stmt) = conn.prepare(&daily_users_sql) {
+            let _ = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            }).map(|rows| {
+                for r in rows.flatten() {
+                    daily_users_map.insert(r.0, r.1);
+                }
+            });
+        }
+
+        let daily_sql = format!(
+            "SELECT date(created_at, 'unixepoch', 'localtime') as day,
+             COUNT(DISTINCT conversation_id) as conv_count,
+             COUNT(*) as msg_count,
+             COALESCE(SUM(answer_tokens + prompt_tokens), 0) as token_sum,
+             SUM(CASE WHEN query != '' THEN 1 ELSE 0 END) as query_count
+             FROM messages
+            WHERE {}
+            GROUP BY day
+            ORDER BY day ASC",
+            msg_where
+        );
+        let mut stmt = conn.prepare(&daily_sql).map_err(|e| e.to_string())?;
         let recent_daily: Vec<DailyStats> = stmt.query_map([], |row| {
+            let date: String = row.get(0)?;
+            let users = daily_users_map.get(&date).copied().unwrap_or(0);
             Ok(DailyStats {
-                date: row.get(0)?,
+                date: date.clone(),
                 conversations: row.get(1)?,
                 messages: row.get(2)?,
                 tokens: row.get(3)?,
                 queries: row.get(4)?,
+                users,
             })
         }).map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -1410,6 +1459,7 @@ impl Database {
             user_feedback_count_distribution,
             conversation_feedback_count_distribution,
             message_feedback_count_distribution,
+            feedback_label_stats,
             top_apps,
             recent_daily,
         })
@@ -1417,29 +1467,23 @@ impl Database {
 }
 
 fn build_where(app_id: Option<&str>, start_time: Option<i64>, end_time: Option<i64>) -> String {
-    let mut conditions = vec!["1=1".to_string()];
-    if let Some(aid) = app_id {
-        conditions.push(format!("app_id = '{}'", aid));
-    }
-    if let Some(st) = start_time {
-        conditions.push(format!("created_at >= {}", st));
-    }
-    if let Some(et) = end_time {
-        conditions.push(format!("created_at <= {}", et));
-    }
-    conditions.join(" AND ")
+    build_where_prefixed("", app_id, start_time, end_time)
 }
 
 fn build_conv_where(app_id: Option<&str>, start_time: Option<i64>, end_time: Option<i64>) -> String {
+    build_where_prefixed("c.", app_id, start_time, end_time)
+}
+
+fn build_where_prefixed(prefix: &str, app_id: Option<&str>, start_time: Option<i64>, end_time: Option<i64>) -> String {
     let mut conditions = vec!["1=1".to_string()];
     if let Some(aid) = app_id {
-        conditions.push(format!("c.app_id = '{}'", aid));
+        conditions.push(format!("{}app_id = '{}'", prefix, aid));
     }
     if let Some(st) = start_time {
-        conditions.push(format!("c.created_at >= {}", st));
+        conditions.push(format!("{}created_at >= {}", prefix, st));
     }
     if let Some(et) = end_time {
-        conditions.push(format!("c.created_at <= {}", et));
+        conditions.push(format!("{}created_at <= {}", prefix, et));
     }
     conditions.join(" AND ")
 }

@@ -174,6 +174,8 @@ export interface DashboardStats {
   user_feedback_count_distribution: StatDistribution | null;
   conversation_feedback_count_distribution: StatDistribution | null;
   message_feedback_count_distribution: StatDistribution | null;
+  // Feedback label stats
+  feedback_label_stats: FeedbackLabelStat[];
   // Rankings & trends
   top_apps: AppRanking[];
   recent_daily: DailyStats[];
@@ -192,6 +194,12 @@ export interface DailyStats {
   messages: number;
   tokens: number;
   queries: number;
+  users: number;
+}
+
+export interface FeedbackLabelStat {
+  feedback: string;
+  count: number;
 }
 
 // ===== Export Options =====

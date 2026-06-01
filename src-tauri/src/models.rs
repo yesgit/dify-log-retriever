@@ -435,6 +435,8 @@ pub struct DashboardStats {
     pub user_feedback_count_distribution: Option<StatDistribution>, // 用户反馈数分布
     pub conversation_feedback_count_distribution: Option<StatDistribution>, // 会话反馈数分布
     pub message_feedback_count_distribution: Option<StatDistribution>, // 消息反馈数分布
+    // Feedback label stats
+    pub feedback_label_stats: Vec<FeedbackLabelStat>,
     // Rankings & trends
     pub top_apps: Vec<AppRanking>,
     pub recent_daily: Vec<DailyStats>,
@@ -457,6 +459,14 @@ pub struct DailyStats {
     pub tokens: i64,
     #[serde(default)]
     pub queries: i64,
+    #[serde(default)]
+    pub users: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackLabelStat {
+    pub feedback: String,
+    pub count: i64,
 }
 
 // ===== Conversations Query Result =====
