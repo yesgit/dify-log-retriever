@@ -11,6 +11,10 @@ pub struct DifyConfig {
     pub api_key: String,
     #[serde(default)]
     pub proxy: Option<String>,
+    #[serde(default)]
+    pub auth_email: Option<String>,
+    #[serde(default)]
+    pub auth_password: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +24,17 @@ pub struct DifyConfigDisplay {
     #[serde(default)]
     pub proxy: Option<String>,
     pub has_key: bool,
+    #[serde(default)]
+    pub auth_mode: String,
+    #[serde(default)]
+    pub auth_email: Option<String>,
+}
+
+// ===== Login =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoginResponse {
+    pub access_token: String,
+    pub refresh_token: String,
 }
 
 // ===== App =====

@@ -20,7 +20,15 @@ fn get_config(state: State<AppState>) -> Result<Option<DifyConfigDisplay>, Strin
 }
 
 #[tauri::command]
-fn save_config(state: State<AppState>, api_base: String, api_key: String, proxy: Option<String>) -> Result<(), String> {
+fn save_config(
+    state: State<AppState>,
+    api_base: String,
+    api_key: String,
+    proxy: Option<String>,
+    auth_mode: Option<String>,
+    auth_email: Option<String>,
+    auth_password: Option<String>,
+) -> Result<(), String> {
     // If the frontend sends __KEEP_EXISTING__, keep the old key
     let actual_key = if api_key == "__KEEP_EXISTING__" {
         let existing = state.db.get_config()?;
@@ -31,8 +39,92 @@ fn save_config(state: State<AppState>, api_base: String, api_key: String, proxy:
     } else {
         api_key
     };
-    let config = DifyConfig { api_base, api_key: actual_key, proxy };
+
+    // Determine auth_email and auth_password based on auth_mode
+    let (final_email, final_password) = match auth_mode.as_deref().unwrap_or("token") {
+        "login" => {
+            let e = auth_email.filter(|e| !e.trim().is_empty());
+            let p = auth_password.filter(|p| !p.trim().is_empty());
+
+            match (e, p) {
+                // Both provided: use new values (fresh login or credential change)
+                (Some(email), Some(password)) => (Some(email), Some(password)),
+                // Neither provided: keep existing credentials
+                (None, None) => {
+                    let existing = state.db.get_config()?;
+                    match existing {
+                        Some(c) => (c.auth_email, c.auth_password),
+                        None => (None, None),
+                    }
+                }
+                // Only one provided: reject to prevent credential mismatch
+                (Some(_), None) => {
+                    return Err("修改登录凭据时，邮箱和密码必须同时提供".to_string());
+                }
+                (None, Some(_)) => {
+                    return Err("修改登录凭据时，邮箱和密码必须同时提供".to_string());
+                }
+            }
+        }
+        _ => (None, None), // token mode: clear credentials
+    };
+
+    let config = DifyConfig {
+        api_base,
+        api_key: actual_key,
+        proxy,
+        auth_email: final_email,
+        auth_password: final_password,
+    };
     state.db.save_config(&config)
+}
+
+#[tauri::command]
+async fn login_to_dify(
+    state: State<'_, AppState>,
+    api_base: String,
+    email: String,
+    password: String,
+    proxy: Option<String>,
+) -> Result<String, String> {
+    let login_resp = DifyApiClient::login(&api_base, &email, &password, proxy.as_deref()).await?;
+
+    // Save the token and credentials
+    let config = DifyConfig {
+        api_base: api_base.trim_end_matches('/').to_string(),
+        api_key: login_resp.access_token.clone(),
+        proxy: proxy.filter(|p| !p.trim().is_empty()),
+        auth_email: Some(email),
+        auth_password: Some(password),
+    };
+    state.db.save_config(&config)?;
+
+    Ok(login_resp.access_token)
+}
+
+/// Try to auto-refresh the token by re-logging in with stored credentials.
+/// Returns the new config if successful, or the original error if not.
+async fn try_auto_refresh(db: &Database) -> Result<DifyConfig, String> {
+    let config = db.get_config()?.ok_or("请先配置连接信息")?;
+
+    let email = config.auth_email.clone().ok_or("Token 已过期，请重新登录")?;
+    let password = config.auth_password.clone().ok_or("Token 已过期，请重新登录")?;
+
+    let login_resp = DifyApiClient::login(
+        &config.api_base,
+        &email,
+        &password,
+        config.proxy.as_deref(),
+    )
+    .await?;
+
+    // Update the stored token
+    db.update_api_key(&login_resp.access_token)?;
+
+    Ok(DifyConfig {
+        api_key: login_resp.access_token,
+        ..config
+    })
 }
 
 #[tauri::command]
@@ -50,7 +142,22 @@ async fn test_connection(api_base: String, api_key: String, proxy: Option<String
 async fn fetch_apps_from_dify(state: State<'_, AppState>) -> Result<Vec<DifyApp>, String> {
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
-    let apps = client.fetch_all_apps().await?;
+    let apps_result = client.fetch_all_apps().await;
+
+    // Auto-refresh on auth error
+    let apps = match apps_result {
+        Ok(apps) => apps,
+        Err(ref e) if DifyApiClient::is_auth_error(e) => {
+            let refreshed_config = try_auto_refresh(&state.db).await?;
+            let new_client = DifyApiClient::new(
+                &refreshed_config.api_base,
+                &refreshed_config.api_key,
+                refreshed_config.proxy.as_deref(),
+            )?;
+            new_client.fetch_all_apps().await?
+        }
+        Err(e) => return Err(e),
+    };
 
     for app in &apps {
         let local_app = DifyApp {
@@ -86,6 +193,20 @@ async fn sync_app_data(
 ) -> Result<SyncResult, String> {
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
+
+    // Try initial request; auto-refresh on auth error
+    let client = match client.fetch_conversations(&app_id, 1, 1).await {
+        Ok(_) => client,
+        Err(ref e) if DifyApiClient::is_auth_error(e) => {
+            let refreshed_config = try_auto_refresh(&state.db).await?;
+            DifyApiClient::new(
+                &refreshed_config.api_base,
+                &refreshed_config.api_key,
+                refreshed_config.proxy.as_deref(),
+            )?
+        }
+        Err(e) => return Err(e),
+    };
 
     let is_incremental = incremental.unwrap_or(false);
 
@@ -341,6 +462,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            login_to_dify,
             test_connection,
             fetch_apps_from_dify,
             get_local_apps,

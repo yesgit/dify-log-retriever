@@ -39,6 +39,90 @@ impl DifyApiClient {
         format!("{}/console/api{}", self.api_base, path)
     }
 
+    // ===== Login to get access token =====
+    pub async fn login(api_base: &str, email: &str, password: &str, proxy: Option<&str>) -> Result<LoginResponse, String> {
+        let base = api_base.trim_end_matches('/').to_string();
+        let mut builder = Client::builder().timeout(Duration::from_secs(30));
+
+        if let Some(proxy_url) = proxy {
+            let trimmed = proxy_url.trim();
+            if !trimmed.is_empty() {
+                let p = Proxy::all(trimmed)
+                    .map_err(|e| format!("代理配置无效 '{}': {}", trimmed, e))?;
+                builder = builder.proxy(p);
+            }
+        }
+
+        let client = builder
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+        let login_body = serde_json::json!({
+            "email": email,
+            "password": password,
+            "language": "zh-Hans",
+        });
+
+        let resp = client
+            .post(format!("{}/console/api/login", base))
+            .header("Content-Type", "application/json")
+            .json(&login_body)
+            .send()
+            .await
+            .map_err(|e| format!("登录请求失败: {}", e))?;
+
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            // Try to extract error message from response
+            if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&body) {
+                let msg = err_json.get("message")
+                    .or(err_json.get("msg"))
+                    .or(err_json.get("error"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("未知错误");
+                return Err(format!("登录失败 ({}): {}", status, msg));
+            }
+            return Err(format!("登录失败 ({}): {}", status, body));
+        }
+
+        // Parse the login response - Dify returns { data: { access_token, refresh_token } }
+        let login_resp: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| format!("解析登录响应失败: {}", e))?;
+
+        // Try { data: { access_token } } first, then fall back to { access_token }
+        let access_token = login_resp
+            .get("data")
+            .and_then(|d| d.get("access_token"))
+            .or_else(|| login_resp.get("access_token"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let refresh_token = login_resp
+            .get("data")
+            .and_then(|d| d.get("refresh_token"))
+            .or_else(|| login_resp.get("refresh_token"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if access_token.is_empty() {
+            return Err("登录成功但未获取到 access_token".to_string());
+        }
+
+        Ok(LoginResponse {
+            access_token,
+            refresh_token,
+        })
+    }
+
+    // ===== Check if error is an auth error (401) =====
+    pub fn is_auth_error(err: &str) -> bool {
+        err.contains("(401)") || err.contains("Unauthorized") || err.contains("401 Unauthorized")
+    }
+
     fn authed_get(&self, path: &str) -> RequestBuilder {
         self.client
             .get(self.console_url(path))

@@ -234,6 +234,27 @@ impl Database {
             conn.execute("DELETE FROM settings WHERE key = 'proxy'", [])
                 .map_err(|e| e.to_string())?;
         }
+        // Save auth credentials
+        if let Some(ref email) = config.auth_email {
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params!["auth_email", email],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute("DELETE FROM settings WHERE key = 'auth_email'", [])
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(ref password) = config.auth_password {
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params!["auth_password", password],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute("DELETE FROM settings WHERE key = 'auth_password'", [])
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -248,12 +269,20 @@ impl Database {
         let proxy: Option<String> = conn
             .query_row("SELECT value FROM settings WHERE key = 'proxy'", [], |row| row.get(0))
             .ok();
+        let auth_email: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key = 'auth_email'", [], |row| row.get(0))
+            .ok();
+        let auth_password: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key = 'auth_password'", [], |row| row.get(0))
+            .ok();
 
         match (api_base, api_key) {
             (Some(base), Some(key)) => Ok(Some(DifyConfig {
                 api_base: base,
                 api_key: key,
                 proxy,
+                auth_email,
+                auth_password,
             })),
             _ => Ok(None),
         }
@@ -261,12 +290,32 @@ impl Database {
 
     pub fn get_config_display(&self) -> Result<Option<DifyConfigDisplay>, String> {
         let config = self.get_config()?;
-        Ok(config.map(|c| DifyConfigDisplay {
-            api_base: c.api_base,
-            api_key_masked: mask_api_key(&c.api_key),
-            proxy: c.proxy,
-            has_key: !c.api_key.is_empty(),
+        Ok(config.map(|c| {
+            let auth_mode = if c.auth_email.is_some() && c.auth_password.is_some() {
+                "login".to_string()
+            } else {
+                "token".to_string()
+            };
+            DifyConfigDisplay {
+                api_base: c.api_base,
+                api_key_masked: mask_api_key(&c.api_key),
+                proxy: c.proxy,
+                has_key: !c.api_key.is_empty(),
+                auth_mode,
+                auth_email: c.auth_email,
+            }
         }))
+    }
+
+    /// Update only the API key in the config (used for auto-refresh after login)
+    pub fn update_api_key(&self, new_key: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["api_key", new_key],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     // ===== Apps =====
