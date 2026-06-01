@@ -1375,6 +1375,10 @@ impl Database {
         ).map_err(|e| e.to_string())?;
         let error_rate = if total_messages > 0 { error_count as f64 / total_messages as f64 * 100.0 } else { 0.0 };
 
+        // ── Dify-aligned metrics ──
+        let satisfaction_rate = if total_messages > 0 { feedback_like as f64 / total_messages as f64 * 1000.0 } else { 0.0 };
+        let avg_conversation_interactions = if total_conversations > 0 { total_messages as f64 / total_conversations as f64 } else { 0.0 };
+
         // ── Distributions ──
         // TTFT (provider_response_latency)
         let ttft_distribution = compute_distribution(
@@ -1507,7 +1511,15 @@ impl Database {
             "SELECT date(created_at, 'unixepoch', 'localtime') as day,
              COUNT(DISTINCT conversation_id) as conv_count,
              COUNT(*) as msg_count,
-             COALESCE(SUM(answer_tokens + prompt_tokens), 0) as token_sum
+             COALESCE(SUM(answer_tokens + prompt_tokens), 0) as token_sum,
+             SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as error_count,
+             SUM(CASE WHEN feedback = 'like' THEN 1 ELSE 0 END) as like_count,
+             SUM(CASE WHEN feedback = 'dislike' THEN 1 ELSE 0 END) as dislike_count,
+             COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
+             COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft_val,
+             COALESCE(AVG(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time END), 0) as avg_speed,
+             COALESCE(SUM(answer_tokens), 0) as answer_token_sum,
+             COALESCE(SUM(prompt_tokens), 0) as prompt_token_sum
              FROM messages
             WHERE {}
             GROUP BY day
@@ -1524,6 +1536,14 @@ impl Database {
                 messages: row.get(2)?,
                 tokens: row.get(3)?,
                 users,
+                errors: row.get(4)?,
+                likes: row.get(5)?,
+                dislikes: row.get(6)?,
+                avg_elapsed_time: row.get(7)?,
+                avg_ttft: row.get(8)?,
+                avg_token_speed: row.get(9)?,
+                total_answer_tokens: row.get(10)?,
+                total_prompt_tokens: row.get(11)?,
             })
         }).map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -1552,6 +1572,8 @@ impl Database {
             avg_feedback_per_message,
             error_count,
             error_rate,
+            satisfaction_rate,
+            avg_conversation_interactions,
             ttft_distribution,
             elapsed_time_distribution,
             token_per_message_distribution,

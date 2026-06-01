@@ -200,14 +200,26 @@ export function DashboardPage() {
         <>
           {/* Basic Count Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <StatCard icon={<Users size={18} className="text-blue-500" />} label="用户数" value={stats.total_users}
-              tooltip="独立终端用户数（基于 from_end_user_id 去重统计）" />
-            <StatCard icon={<MessageSquare size={18} className="text-green-500" />} label="会话数" value={stats.total_conversations}
-              tooltip="会话（Conversation）总数，每个会话包含多条消息" />
-            <StatCard icon={<Activity size={18} className="text-cyan-500" />} label="消息数" value={stats.total_messages}
-              tooltip="用户提问消息数量，即 query 非空的消息数" />
+            <StatCard icon={<Users size={18} className="text-blue-500" />} label="活跃用户数" value={stats.total_users}
+              tooltip="与 AI 有效互动的唯一用户数（基于 from_end_user_id 去重统计）" />
+            <StatCard icon={<MessageSquare size={18} className="text-green-500" />} label="全部会话数" value={stats.total_conversations}
+              tooltip="会话（Conversation）总数，提示词编排和调试的消息不计入" />
+            <StatCard icon={<Activity size={18} className="text-cyan-500" />} label="全部消息数" value={stats.total_messages}
+              tooltip="AI 每天的互动总次数，每回答用户一个问题算一条 Message" />
             <StatCard icon={<Zap size={18} className="text-orange-500" />} label="应用数" value={stats.total_apps}
               tooltip="筛选范围内的应用数量" />
+          </div>
+
+          {/* Dify-aligned Key Metrics */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <SmallStat label="平均会话互动数" value={stats.avg_conversation_interactions.toFixed(1)}
+              tooltip="每个会话用户的持续沟通次数，反映用户粘性（消息数 ÷ 会话数）" />
+            <SmallStat label="用户满意度 (‰)" value={stats.satisfaction_rate.toFixed(1)}
+              tooltip="每 1000 条消息的点赞数，反映用户对回答十分满意的比例" />
+            <SmallStat label="好评率" value={formatPercent(stats.feedback_like_rate)}
+              tooltip="好评率 = 赞数 / (赞数 + 踩数) × 100%" />
+            <SmallStat label="异常率" value={formatPercent(stats.error_rate)}
+              tooltip="异常率 = 异常消息数 / 消息总数 × 100%" />
           </div>
 
           {/* Average Distributions */}
@@ -553,8 +565,8 @@ function DistributionTable({
 
 function DailyTrendChart({ data }: { data: DailyStats[] }) {
   const formatTickNumber = (v: number) => {
-    if (v >= 1000000) return `${(v / 1000000).toFixed(0)}M`;
-    if (v >= 1000) return `${(v / 1000).toFixed(0)}K`;
+    if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
+    if (v >= 1000) return `${(v / 1000).toFixed(1)}K`;
     return v.toString();
   };
 
@@ -597,9 +609,9 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
         </ResponsiveContainer>
       </div>
 
-      {/* Token trend */}
+      {/* Token trend — split by input/output */}
       <div>
-        <h4 className="text-sm font-medium text-gray-700 mb-3">每日 Token 消耗</h4>
+        <h4 className="text-sm font-medium text-gray-700 mb-3">每日 Token 消耗（输入/输出）</h4>
         <ResponsiveContainer width="100%" height={240}>
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -610,7 +622,82 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="tokens" name="Token 消耗" stroke="#f97316" strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="total_prompt_tokens" name="输入 Token" stroke="#f97316" strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="total_answer_tokens" name="输出 Token" stroke="#22c55e" strokeWidth={2} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Error trend */}
+      <div>
+        <h4 className="text-sm font-medium text-gray-700 mb-3">每日异常数</h4>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={formatTickNumber} />
+            <RechartsTooltip
+              contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line type="monotone" dataKey="errors" name="异常数" stroke="#ef4444" strokeWidth={2} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Feedback trend */}
+      <div>
+        <h4 className="text-sm font-medium text-gray-700 mb-3">每日反馈（赞/踩）</h4>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={formatTickNumber} />
+            <RechartsTooltip
+              contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line type="monotone" dataKey="likes" name="赞数" stroke="#22c55e" strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="dislikes" name="踩数" stroke="#ef4444" strokeWidth={2} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Response time trend (seconds scale) */}
+      <div>
+        <h4 className="text-sm font-medium text-gray-700 mb-3">每日响应时间</h4>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit="s" />
+            <RechartsTooltip
+              contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [`${Number(v).toFixed(2)}s`, name]}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line type="monotone" dataKey="avg_elapsed_time" name="平均响应时间" stroke="#3b82f6" strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="avg_ttft" name="平均 TTFT" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Token speed trend (tokens/s scale) */}
+      <div>
+        <h4 className="text-sm font-medium text-gray-700 mb-3">每日 Token 生成速度</h4>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit=" t/s" />
+            <RechartsTooltip
+              contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [`${Number(v).toFixed(1)} t/s`, name]}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line type="monotone" dataKey="avg_token_speed" name="Token 速度" stroke="#f97316" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>

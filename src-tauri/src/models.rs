@@ -426,6 +426,9 @@ pub struct DashboardStats {
     // Error stats
     pub error_count: i64,
     pub error_rate: f64,
+    // Dify-aligned metrics
+    pub satisfaction_rate: f64,                // 用户满意度 = likes / messages * 1000
+    pub avg_conversation_interactions: f64,    // 平均会话互动数 = messages / conversations
     // Distributions
     pub ttft_distribution: Option<StatDistribution>,       // 首Token时间
     pub elapsed_time_distribution: Option<StatDistribution>, // 总响应时间
@@ -458,6 +461,23 @@ pub struct DailyStats {
     pub tokens: i64,
     #[serde(default)]
     pub users: i64,
+    // Extended fields (aligned with Dify monitoring)
+    #[serde(default)]
+    pub errors: i64,
+    #[serde(default)]
+    pub likes: i64,
+    #[serde(default)]
+    pub dislikes: i64,
+    #[serde(default)]
+    pub avg_elapsed_time: f64,
+    #[serde(default)]
+    pub avg_ttft: f64,
+    #[serde(default)]
+    pub avg_token_speed: f64,
+    #[serde(default)]
+    pub total_answer_tokens: i64,
+    #[serde(default)]
+    pub total_prompt_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

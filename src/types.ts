@@ -165,6 +165,9 @@ export interface DashboardStats {
   // Error stats
   error_count: number;
   error_rate: number;
+  // Dify-aligned metrics
+  satisfaction_rate: number;              // 用户满意度 = likes / messages * 1000
+  avg_conversation_interactions: number;  // 平均会话互动数 = messages / conversations
   // Distributions
   ttft_distribution: StatDistribution | null;
   elapsed_time_distribution: StatDistribution | null;
@@ -193,6 +196,15 @@ export interface DailyStats {
   messages: number;
   tokens: number;
   users: number;
+  // Extended fields (aligned with Dify monitoring)
+  errors: number;
+  likes: number;
+  dislikes: number;
+  avg_elapsed_time: number;
+  avg_ttft: number;
+  avg_token_speed: number;
+  total_answer_tokens: number;
+  total_prompt_tokens: number;
 }
 
 export interface FeedbackLabelStat {
