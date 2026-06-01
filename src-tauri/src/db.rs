@@ -1287,10 +1287,48 @@ impl Database {
         };
         let daily_avg_tokens = total_tokens as f64 / days_in_range;
 
-        // ── Averages ──
-        let avg_messages_per_conversation = if total_conversations > 0 { total_messages as f64 / total_conversations as f64 } else { 0.0 };
-        let avg_conversations_per_user = if total_users > 0 { total_conversations as f64 / total_users as f64 } else { 0.0 };
-        let avg_messages_per_user = if total_users > 0 { total_messages as f64 / total_users as f64 } else { 0.0 };
+        // ── Average distributions ──
+        let messages_per_conversation_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(msg_count AS REAL) FROM (
+                    SELECT app_id, conversation_id, COUNT(*) as msg_count
+                    FROM messages WHERE {}
+                    GROUP BY app_id, conversation_id
+                ) sub",
+                msg_where_q
+            ),
+        )?;
+
+        let conversations_per_user_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(conv_count AS REAL) FROM (
+                    SELECT from_end_user_id, COUNT(*) as conv_count
+                    FROM conversations c WHERE from_end_user_id != '' AND {}
+                    GROUP BY from_end_user_id
+                ) sub",
+                conv_where
+            ),
+        )?;
+
+        // For user messages distribution, need prefixed where clause
+        let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
+        let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
+
+        let messages_per_user_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(msg_count AS REAL) FROM (
+                    SELECT c.from_end_user_id, COUNT(*) as msg_count
+                    FROM conversations c
+                    INNER JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id
+                    WHERE c.from_end_user_id != '' AND {}
+                    GROUP BY c.from_end_user_id
+                ) sub",
+                msg_where_m_q
+            ),
+        )?;
 
         // ── Feedback counts ──
         let feedback_like: i64 = conn.query_row(
@@ -1441,10 +1479,9 @@ impl Database {
         .collect();
 
         // ── Daily trend ──
-        let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
+        // (msg_where_m and msg_where_m_q already defined above for user messages distribution)
 
         // For daily users, join messages with conversations (only query messages)
-        let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
         let daily_users_sql = format!(
             "SELECT date(m.created_at, 'unixepoch', 'localtime') as day,
                     COUNT(DISTINCT c.from_end_user_id) as user_count
@@ -1501,9 +1538,9 @@ impl Database {
             total_prompt_tokens,
             total_tokens,
             daily_avg_tokens,
-            avg_messages_per_conversation,
-            avg_conversations_per_user,
-            avg_messages_per_user,
+            messages_per_conversation_distribution,
+            conversations_per_user_distribution,
+            messages_per_user_distribution,
             feedback_total,
             feedback_like,
             feedback_dislike,

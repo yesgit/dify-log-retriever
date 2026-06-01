@@ -410,9 +410,9 @@ pub struct DashboardStats {
     pub total_tokens: i64,
     pub daily_avg_tokens: f64,
     // Averages
-    pub avg_messages_per_conversation: f64,
-    pub avg_conversations_per_user: f64,
-    pub avg_messages_per_user: f64,
+    pub messages_per_conversation_distribution: Option<StatDistribution>,
+    pub conversations_per_user_distribution: Option<StatDistribution>,
+    pub messages_per_user_distribution: Option<StatDistribution>,
     // Feedback counts
     pub feedback_total: i64,
     pub feedback_like: i64,

@@ -148,10 +148,10 @@ export interface DashboardStats {
   total_prompt_tokens: number;
   total_tokens: number;
   daily_avg_tokens: number;
-  // Averages
-  avg_messages_per_conversation: number;
-  avg_conversations_per_user: number;
-  avg_messages_per_user: number;
+  // Average distributions
+  messages_per_conversation_distribution: StatDistribution | null;
+  conversations_per_user_distribution: StatDistribution | null;
+  messages_per_user_distribution: StatDistribution | null;
   // Feedback counts
   feedback_total: number;
   feedback_like: number;

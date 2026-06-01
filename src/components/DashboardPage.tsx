@@ -210,16 +210,36 @@ export function DashboardPage() {
               tooltip="筛选范围内的应用数量" />
           </div>
 
-          {/* Average Metrics */}
-          <Section title="平均指标">
-            <div className="grid grid-cols-3 gap-4">
-              <AvgCard label="会话平均消息数" value={stats.avg_messages_per_conversation} decimals={1}
-                tooltip="平均每个会话包含的用户提问消息数 = 消息数 / 会话数" />
-              <AvgCard label="用户平均会话数" value={stats.avg_conversations_per_user} decimals={1}
-                tooltip="平均每个用户发起的会话数 = 会话数 / 用户数" />
-              <AvgCard label="用户平均消息数" value={stats.avg_messages_per_user} decimals={1}
-                tooltip="平均每个用户的提问消息数 = 消息数 / 用户数" />
-            </div>
+          {/* Average Distributions */}
+          <Section title="平均指标分布">
+            {stats.messages_per_conversation_distribution && (
+              <div className="mb-4">
+                <DistributionTable
+                  title="会话消息数分布"
+                  dist={stats.messages_per_conversation_distribution}
+                  format={(v) => v.toFixed(1)}
+                  tooltip="每个会话包含的用户提问消息数分布。样本为筛选范围内的每个会话，统计其消息数量。"
+                />
+              </div>
+            )}
+            {stats.conversations_per_user_distribution && (
+              <div className="mb-4">
+                <DistributionTable
+                  title="用户会话数分布"
+                  dist={stats.conversations_per_user_distribution}
+                  format={(v) => v.toFixed(1)}
+                  tooltip="每个终端用户发起的会话数分布。样本为筛选范围内的每个独立用户，统计其会话数量。"
+                />
+              </div>
+            )}
+            {stats.messages_per_user_distribution && (
+              <DistributionTable
+                title="用户消息数分布"
+                dist={stats.messages_per_user_distribution}
+                format={(v) => v.toFixed(1)}
+                tooltip="每个终端用户的提问消息数分布。样本为筛选范围内的每个独立用户，统计其消息数量。"
+              />
+            )}
           </Section>
 
           {/* Feedback Stats */}
@@ -461,18 +481,6 @@ function SmallStat({ label, value, tooltip }: { label: string; value: string | n
         {tooltip && <TooltipIcon text={tooltip} />}
       </p>
       <p className="text-lg font-bold text-gray-900">{value}</p>
-    </div>
-  );
-}
-
-function AvgCard({ label, value, decimals = 2, tooltip }: { label: string; value: number; decimals?: number; tooltip?: string }) {
-  return (
-    <div className="p-4 bg-gray-50 rounded-lg text-center">
-      <p className="text-xs text-gray-500 mb-1 flex items-center justify-center">
-        {label}
-        {tooltip && <TooltipIcon text={tooltip} />}
-      </p>
-      <p className="text-2xl font-bold text-gray-900">{value.toFixed(decimals)}</p>
     </div>
   );
 }
