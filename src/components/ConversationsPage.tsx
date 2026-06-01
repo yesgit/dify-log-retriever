@@ -318,25 +318,25 @@ export function ConversationsPage() {
                         </div>
                       )}
                       {msg.workflow_run && (
-                        <div className="mt-2 rounded bg-indigo-50 p-2 text-xs">
-                          <div className="mb-2 flex flex-wrap items-center gap-2 text-indigo-700">
+                        <details className="mt-2 rounded bg-indigo-50 p-2 text-xs">
+                          <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-indigo-700">
                             <GitBranch size={14} />
                             <span className="font-medium">Workflow Run</span>
                             <span className={`px-2 py-0.5 rounded ${statusClass(msg.workflow_run.status)}`}>{msg.workflow_run.status || '-'}</span>
                             <span>{msg.workflow_run.elapsed_time.toFixed(2)}s</span>
                             <span>Steps: {msg.workflow_run.total_steps}</span>
                             <span>Tokens: {formatTokens(msg.workflow_run.total_tokens)}</span>
-                          </div>
+                          </summary>
                           <JsonBlock title="Workflow 图定义" value={msg.workflow_run.graph} compact />
-                        </div>
+                        </details>
                       )}
                       {msg.node_executions && msg.node_executions.length > 0 && (
-                        <div className="mt-2 rounded bg-slate-50 p-2 text-xs">
-                          <p className="mb-2 flex items-center gap-1 font-medium text-slate-700">
+                        <details className="mt-2 rounded bg-slate-50 p-2 text-xs">
+                          <summary className="flex cursor-pointer items-center gap-1 font-medium text-slate-700">
                             <GitBranch size={14} />
                             节点执行过程 ({msg.node_executions.length})
-                          </p>
-                          <div className="space-y-2">
+                          </summary>
+                          <div className="space-y-2 mt-2">
                             {msg.node_executions.map((node: NodeExecutionDetail, i: number) => (
                               <div key={node.id || i} className="rounded border border-slate-200 bg-white p-3">
                                 <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -356,7 +356,7 @@ export function ConversationsPage() {
                               </div>
                             ))}
                           </div>
-                        </div>
+                        </details>
                       )}
                       {/* Agent Thoughts */}
                       {msg.agent_thoughts && Array.isArray(msg.agent_thoughts) && msg.agent_thoughts.length > 0 && (
