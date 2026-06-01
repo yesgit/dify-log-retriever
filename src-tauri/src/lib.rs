@@ -4,6 +4,7 @@ mod export;
 mod models;
 
 use tauri::State;
+use std::collections::HashSet;
 
 use db::Database;
 use dify_api::DifyApiClient;
@@ -89,6 +90,10 @@ async fn sync_app_data(
     let mut synced_conversations: i64 = 0;
     let mut total_messages: i64 = 0;
     let mut synced_messages: i64 = 0;
+    let mut synced_workflow_runs: i64 = 0;
+    let mut synced_node_executions: i64 = 0;
+    let mut failed_details: i64 = 0;
+    let mut fetched_workflow_runs: HashSet<String> = HashSet::new();
     let mut page: i64 = 1;
 
     loop {
@@ -96,17 +101,52 @@ async fn sync_app_data(
         total_conversations += conv_resp.data.len() as i64;
 
         for conv in &conv_resp.data {
-            // Save conversation
             state.db.upsert_conversation(&app_id, conv)?;
             synced_conversations += 1;
 
-            // Fetch messages for this conversation
+            match client.fetch_conversation_detail(&app_id, &conv.id).await {
+                Ok(mut detail) => {
+                    fill_missing_conversation_detail(&mut detail, conv);
+                    state.db.upsert_conversation(&app_id, &detail)?;
+                }
+                Err(_) => {
+                    failed_details += 1;
+                }
+            }
+
             let messages = client.fetch_messages(&app_id, &conv.id, 100).await?;
             total_messages += messages.len() as i64;
 
             for msg in &messages {
                 state.db.upsert_message(&app_id, &conv.id, msg)?;
                 synced_messages += 1;
+
+                if let Some(run_id) = msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()) {
+                    let cache_key = format!("{}:{}", app_id, run_id);
+                    if fetched_workflow_runs.insert(cache_key) {
+                        match client.fetch_workflow_run(&app_id, run_id).await {
+                            Ok(run) => {
+                                state.db.upsert_workflow_run(&app_id, &run)?;
+                                synced_workflow_runs += 1;
+                            }
+                            Err(_) => {
+                                failed_details += 1;
+                            }
+                        }
+
+                        match client.fetch_node_executions(&app_id, run_id).await {
+                            Ok(nodes) => {
+                                for node in &nodes {
+                                    state.db.upsert_node_execution(&app_id, run_id, node)?;
+                                    synced_node_executions += 1;
+                                }
+                            }
+                            Err(_) => {
+                                failed_details += 1;
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -122,6 +162,9 @@ async fn sync_app_data(
         synced_conversations,
         total_messages,
         synced_messages,
+        synced_workflow_runs,
+        synced_node_executions,
+        failed_details,
     })
 }
 
@@ -145,8 +188,9 @@ fn get_conversations(
 fn get_messages(
     state: State<AppState>,
     conversation_id: String,
+    app_id: Option<String>,
 ) -> Result<Vec<MessageDetail>, String> {
-    state.db.get_messages(&conversation_id)
+    state.db.get_messages(app_id.as_deref(), &conversation_id)
 }
 
 #[tauri::command]
@@ -236,5 +280,65 @@ fn dirs_data_dir() -> std::path::PathBuf {
         let fallback = std::path::PathBuf::from(".dify-log-retriever");
         std::fs::create_dir_all(&fallback).ok();
         fallback
+    }
+}
+
+fn fill_missing_conversation_detail(detail: &mut DifyConversationItem, list_item: &DifyConversationItem) {
+    if detail.name.is_empty() {
+        detail.name = list_item.name.clone();
+    }
+    if detail.summary.is_empty() {
+        detail.summary = list_item.summary.clone();
+    }
+    if detail.status.is_empty() {
+        detail.status = list_item.status.clone();
+    }
+    if detail.introduction.is_empty() {
+        detail.introduction = list_item.introduction.clone();
+    }
+    if detail.from_source.is_empty() {
+        detail.from_source = list_item.from_source.clone();
+    }
+    if detail.from_end_user_id.is_empty() {
+        detail.from_end_user_id = list_item.from_end_user_id.clone();
+    }
+    if detail.from_end_user_session_id.is_empty() {
+        detail.from_end_user_session_id = list_item.from_end_user_session_id.clone();
+    }
+    if detail.read_at.is_none() {
+        detail.read_at = list_item.read_at;
+    }
+    if !detail.annotated && list_item.annotated {
+        detail.annotated = true;
+    }
+    if is_empty_json(&detail.inputs) {
+        detail.inputs = list_item.inputs.clone();
+    }
+    if is_empty_json(&detail.model_config) {
+        detail.model_config = list_item.model_config.clone();
+    }
+    if is_empty_json(&detail.user_feedback_stats) {
+        detail.user_feedback_stats = list_item.user_feedback_stats.clone();
+    }
+    if is_empty_json(&detail.admin_feedback_stats) {
+        detail.admin_feedback_stats = list_item.admin_feedback_stats.clone();
+    }
+    if is_empty_json(&detail.status_count) {
+        detail.status_count = list_item.status_count.clone();
+    }
+    if detail.created_at == 0 {
+        detail.created_at = list_item.created_at;
+    }
+    if detail.updated_at == 0 {
+        detail.updated_at = list_item.updated_at;
+    }
+}
+
+fn is_empty_json(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::Array(items) => items.is_empty(),
+        serde_json::Value::Object(map) => map.is_empty(),
+        _ => false,
     }
 }

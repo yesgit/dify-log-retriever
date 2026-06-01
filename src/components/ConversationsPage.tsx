@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Search, ChevronLeft, ChevronRight, User, Clock, ThumbsUp, ThumbsDown, Minus, Loader2 } from 'lucide-react';
-import type { ConversationSummary, MessageDetail, ConversationsResult } from '../types';
+import { MessageSquare, Search, ChevronLeft, ChevronRight, User, Clock, ThumbsUp, ThumbsDown, Minus, Loader2, GitBranch, AlertCircle, FileJson } from 'lucide-react';
+import type { ConversationSummary, MessageDetail, ConversationsResult, NodeExecutionDetail } from '../types';
 
 export function ConversationsPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -52,12 +52,13 @@ export function ConversationsPage() {
     }
   };
 
-  const loadMessages = async (conversationId: string) => {
-    setSelectedConversation(conversationId);
+  const loadMessages = async (conv: ConversationSummary) => {
+    setSelectedConversation(conv.conversation_id);
     setMsgLoading(true);
     try {
       const result = await invoke<MessageDetail[]>('get_messages', {
-        conversationId,
+        conversationId: conv.conversation_id,
+        appId: conv.app_id,
       });
       setMessages(result || []);
     } catch (e) {
@@ -86,6 +87,30 @@ export function ConversationsPage() {
     if (feedback === 'like') return <ThumbsUp size={14} className="text-green-500" />;
     if (feedback === 'dislike') return <ThumbsDown size={14} className="text-red-500" />;
     return <Minus size={14} className="text-gray-300" />;
+  };
+
+  const feedbackItems = (msg: MessageDetail) => Array.isArray(msg.feedbacks) ? msg.feedbacks : [];
+
+  const hasJsonValue = (value: any) => {
+    if (value == null) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') return Object.keys(value).length > 0;
+    return value !== '';
+  };
+
+  const formatJson = (value: any) => {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const statusClass = (status?: string) => {
+    if (status === 'succeeded' || status === 'success' || status === 'normal') return 'bg-green-50 text-green-700';
+    if (status === 'failed' || status === 'error') return 'bg-red-50 text-red-700';
+    if (status === 'running') return 'bg-blue-50 text-blue-700';
+    return 'bg-gray-50 text-gray-600';
   };
 
   return (
@@ -149,7 +174,7 @@ export function ConversationsPage() {
               conversations.map((conv) => (
                 <div
                   key={conv.id}
-                  onClick={() => loadMessages(conv.conversation_id)}
+                  onClick={() => loadMessages(conv)}
                   className={`px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-blue-50 transition-colors ${
                     selectedConversation === conv.conversation_id ? 'bg-blue-50 border-l-2 border-l-blue-500' : ''
                   }`}
@@ -243,6 +268,96 @@ export function ConversationsPage() {
                         </div>
                       </div>
                       <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.answer}</p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                        {msg.status && (
+                          <span className={`px-2 py-1 rounded ${statusClass(msg.status)}`}>状态: {msg.status}</span>
+                        )}
+                        {msg.workflow_run_id && (
+                          <span className="px-2 py-1 rounded bg-indigo-50 text-indigo-700">
+                            Workflow: {msg.workflow_run_id}
+                          </span>
+                        )}
+                        {msg.provider_response_latency > 0 && (
+                          <span className="px-2 py-1 rounded bg-gray-50 text-gray-600">
+                            模型延迟: {msg.provider_response_latency.toFixed(2)}s
+                          </span>
+                        )}
+                        {msg.message_tokens > 0 && (
+                          <span className="px-2 py-1 rounded bg-gray-50 text-gray-600">
+                            Message Tokens: {formatTokens(msg.message_tokens)}
+                          </span>
+                        )}
+                      </div>
+                      {hasJsonValue(msg.error) && (
+                        <div className="mt-2 flex items-start gap-2 rounded bg-red-50 px-3 py-2 text-xs text-red-700">
+                          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                          <pre className="whitespace-pre-wrap break-all">{formatJson(msg.error)}</pre>
+                        </div>
+                      )}
+                      {hasJsonValue(msg.inputs) && (
+                        <JsonBlock title="消息输入" value={msg.inputs} />
+                      )}
+                      {feedbackItems(msg).length > 0 && (
+                        <div className="mt-2 rounded bg-amber-50 p-2 text-xs">
+                          <p className="mb-2 font-medium text-amber-700">反馈详情 ({feedbackItems(msg).length})</p>
+                          <div className="space-y-2">
+                            {feedbackItems(msg).map((feedback: any, i: number) => (
+                              <div key={i} className="rounded border border-amber-100 bg-white p-2">
+                                <div className="mb-1 flex flex-wrap items-center gap-2 text-amber-700">
+                                  <span>#{i + 1}</span>
+                                  {feedback.rating && <span>评分: {feedback.rating}</span>}
+                                  {feedback.from_source && <span>来源: {feedback.from_source}</span>}
+                                  {feedback.created_at && <span>时间: {formatTime(feedback.created_at)}</span>}
+                                </div>
+                                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all text-gray-600">
+                                  {formatJson(feedback)}
+                                </pre>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {msg.workflow_run && (
+                        <div className="mt-2 rounded bg-indigo-50 p-2 text-xs">
+                          <div className="mb-2 flex flex-wrap items-center gap-2 text-indigo-700">
+                            <GitBranch size={14} />
+                            <span className="font-medium">Workflow Run</span>
+                            <span className={`px-2 py-0.5 rounded ${statusClass(msg.workflow_run.status)}`}>{msg.workflow_run.status || '-'}</span>
+                            <span>{msg.workflow_run.elapsed_time.toFixed(2)}s</span>
+                            <span>Steps: {msg.workflow_run.total_steps}</span>
+                            <span>Tokens: {formatTokens(msg.workflow_run.total_tokens)}</span>
+                          </div>
+                          <JsonBlock title="Workflow 图定义" value={msg.workflow_run.graph} compact />
+                        </div>
+                      )}
+                      {msg.node_executions && msg.node_executions.length > 0 && (
+                        <div className="mt-2 rounded bg-slate-50 p-2 text-xs">
+                          <p className="mb-2 flex items-center gap-1 font-medium text-slate-700">
+                            <GitBranch size={14} />
+                            节点执行过程 ({msg.node_executions.length})
+                          </p>
+                          <div className="space-y-2">
+                            {msg.node_executions.map((node: NodeExecutionDetail, i: number) => (
+                              <div key={node.id || i} className="rounded border border-slate-200 bg-white p-3">
+                                <div className="mb-2 flex flex-wrap items-center gap-2">
+                                  <span className="font-medium text-slate-800">#{i + 1} {node.title || node.node_id}</span>
+                                  <span className="rounded bg-slate-100 px-2 py-0.5 text-slate-600">{node.node_type || '-'}</span>
+                                  <span className={`rounded px-2 py-0.5 ${statusClass(node.status)}`}>{node.status || '-'}</span>
+                                  {node.elapsed_time > 0 && <span className="text-slate-500">{node.elapsed_time.toFixed(2)}s</span>}
+                                  {node.created_at > 0 && <span className="text-slate-400">{formatTime(node.created_at)}</span>}
+                                </div>
+                                <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                                  <JsonBlock title="输入" value={node.inputs} compact />
+                                  <JsonBlock title="过程数据" value={node.process_data} compact />
+                                  <JsonBlock title="输出" value={node.outputs} compact />
+                                  <JsonBlock title="元数据" value={node.execution_metadata} compact />
+                                </div>
+                                {hasJsonValue(node.error) && <JsonBlock title="错误" value={node.error} compact />}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       {/* Agent Thoughts */}
                       {msg.agent_thoughts && Array.isArray(msg.agent_thoughts) && msg.agent_thoughts.length > 0 && (
                         <div className="mt-2 p-2 bg-gray-50 rounded text-xs">
@@ -268,6 +383,7 @@ export function ConversationsPage() {
                           ))}
                         </div>
                       )}
+                      <JsonBlock title="原始消息 JSON" value={msg.raw_json} />
                     </div>
                   </div>
                 ))}
@@ -277,5 +393,23 @@ export function ConversationsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function JsonBlock({ title, value, compact = false }: { title: string; value: any; compact?: boolean }) {
+  if (value == null) return null;
+  if (Array.isArray(value) && value.length === 0) return null;
+  if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return null;
+
+  return (
+    <details className={`mt-2 rounded border border-gray-100 bg-white ${compact ? 'p-2' : 'p-3'}`}>
+      <summary className="flex cursor-pointer items-center gap-1 text-xs font-medium text-gray-600">
+        <FileJson size={13} />
+        {title}
+      </summary>
+      <pre className={`${compact ? 'max-h-48' : 'max-h-80'} mt-2 overflow-auto whitespace-pre-wrap break-all rounded bg-gray-50 p-2 text-xs text-gray-600`}>
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </details>
   );
 }

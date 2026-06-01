@@ -11,6 +11,9 @@ interface SyncStatus {
   synced_conversations: number;
   total_messages: number;
   synced_messages: number;
+  synced_workflow_runs: number;
+  synced_node_executions: number;
+  failed_details: number;
   error_message?: string;
   last_synced_at?: number;
 }
@@ -73,6 +76,9 @@ export function SyncPage() {
           synced_conversations: 0,
           total_messages: 0,
           synced_messages: 0,
+          synced_workflow_runs: 0,
+          synced_node_executions: 0,
+          failed_details: 0,
         });
         return next;
       });
@@ -88,6 +94,9 @@ export function SyncPage() {
             synced_conversations: result.synced_conversations,
             total_messages: result.total_messages,
             synced_messages: result.synced_messages,
+            synced_workflow_runs: result.synced_workflow_runs,
+            synced_node_executions: result.synced_node_executions,
+            failed_details: result.failed_details,
             last_synced_at: Date.now(),
           } as SyncStatus);
           return next;
@@ -209,6 +218,17 @@ export function SyncPage() {
                             <span>
                               消息: {status.synced_messages}/{status.total_messages}
                             </span>
+                            <span>
+                              Workflow: {status.synced_workflow_runs}
+                            </span>
+                            <span>
+                              节点: {status.synced_node_executions}
+                            </span>
+                            {status.failed_details > 0 && (
+                              <span className="text-amber-600">
+                                详情失败: {status.failed_details}
+                              </span>
+                            )}
                             {status.status === 'syncing' && (
                               <span className="text-blue-500">同步中，请稍候...</span>
                             )}

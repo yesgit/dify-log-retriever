@@ -46,18 +46,68 @@ export interface ConversationsResult {
 // ===== Message =====
 export interface MessageDetail {
   id: string;
+  app_id: string;
   message_id: string;
   conversation_id: string;
   query: string;
   answer: string;
   feedback: string | null; // 'like' | 'dislike' | null
+  feedbacks: any[];
   retriever_resources: any[];
   message_metadata: Record<string, any>;
   agent_thoughts: any[];
+  inputs: Record<string, any>;
+  message_files: any[];
+  annotation: any;
+  annotation_hit_history: any;
+  status: string;
+  error: any;
+  parent_message_id: string;
+  workflow_run_id: string | null;
+  workflow_run: WorkflowRunDetail | null;
+  node_executions: NodeExecutionDetail[];
+  raw_json: Record<string, any>;
   answer_tokens: number;
   prompt_tokens: number;
+  message_tokens: number;
+  provider_response_latency: number;
   elapsed_time?: number;
   created_at: number;
+}
+
+export interface WorkflowRunDetail {
+  id: string;
+  workflow_run_id: string;
+  workflow_id: string;
+  status: string;
+  version: string;
+  graph: Record<string, any>;
+  elapsed_time: number;
+  total_tokens: number;
+  total_steps: number;
+  created_at: number;
+  finished_at: number;
+  raw_json: Record<string, any>;
+}
+
+export interface NodeExecutionDetail {
+  id: string;
+  execution_id: string;
+  workflow_run_id: string;
+  node_id: string;
+  node_type: string;
+  title: string;
+  inputs: any;
+  process_data: any;
+  outputs: any;
+  execution_metadata: any;
+  extras: any;
+  status: string;
+  error: any;
+  elapsed_time: number;
+  created_at: number;
+  finished_at: number;
+  raw_json: any;
 }
 
 // ===== Sync State =====
@@ -66,6 +116,9 @@ export interface SyncResult {
   synced_conversations: number;
   total_messages: number;
   synced_messages: number;
+  synced_workflow_runs: number;
+  synced_node_executions: number;
+  failed_details: number;
 }
 
 // ===== Dashboard Stats =====
