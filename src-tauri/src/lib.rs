@@ -453,6 +453,40 @@ fn export_feedback_data(
 }
 
 #[tauri::command]
+fn get_app_node_types(
+    state: State<AppState>,
+    app_id: String,
+) -> Result<Vec<NodeTypeSummary>, String> {
+    state.db.get_app_node_types(&app_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn export_node_eval_data(
+    state: State<AppState>,
+    format: String,
+    app_id: String,
+    node_type: Option<String>,
+    node_id: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<String, String> {
+    let records = state.db.get_node_executions_for_export(
+        &app_id,
+        node_type.as_deref(),
+        node_id.as_deref(),
+        start_date.as_deref(),
+        end_date.as_deref(),
+    )?;
+
+    if records.is_empty() {
+        return Err("没有找到匹配的节点执行数据。请确认该应用已同步，且存在成功的 LLM/Agent 节点执行记录。".to_string());
+    }
+
+    export::export_node_eval_to_file(&records, &format)
+}
+
+#[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -483,6 +517,8 @@ pub fn run() {
             export_data,
             get_feedback_messages,
             export_feedback_data,
+            get_app_node_types,
+            export_node_eval_data,
             get_app_version,
         ])
         .run(tauri::generate_context!())

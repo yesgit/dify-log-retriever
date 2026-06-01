@@ -144,6 +144,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_conversations_app_created ON conversations(app_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_workflow_runs_app_run ON workflow_runs(app_id, workflow_run_id);
             CREATE INDEX IF NOT EXISTS idx_node_executions_app_run ON node_executions(app_id, workflow_run_id);
+            CREATE INDEX IF NOT EXISTS idx_node_executions_app_type ON node_executions(app_id, node_type, node_id, status);
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -1009,6 +1010,132 @@ impl Database {
             .collect();
 
         Ok(FeedbackResult { data, total })
+    }
+
+    // ===== Node Eval Export =====
+    pub fn get_app_node_types(&self, app_id: &str) -> Result<Vec<NodeTypeSummary>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT node_type, node_id, title, COUNT(*) as cnt
+                 FROM node_executions
+                 WHERE app_id = ?1 AND status = 'succeeded'
+                 GROUP BY node_type, node_id, title
+                 ORDER BY node_type, node_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_map(params![app_id], |row| {
+                Ok(NodeTypeSummary {
+                    node_type: row.get(0)?,
+                    node_id: row.get(1)?,
+                    node_title: row.get(2)?,
+                    count: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(result)
+    }
+
+    #[allow(unused_assignments)]
+    pub fn get_node_executions_for_export(
+        &self,
+        app_id: &str,
+        node_type: Option<&str>,
+        node_id: Option<&str>,
+        start_date: Option<&str>,
+        end_date: Option<&str>,
+    ) -> Result<Vec<NodeEvalRecord>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut conditions = vec![
+            "ne.app_id = ?1".to_string(),
+            "ne.status = 'succeeded'".to_string(),
+        ];
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(app_id.to_string())];
+        let mut param_idx = 2;
+
+        if let Some(nt) = node_type {
+            if !nt.is_empty() {
+                conditions.push(format!("ne.node_type = ?{}", param_idx));
+                params.push(Box::new(nt.to_string()));
+                param_idx += 1;
+            }
+        }
+        if let Some(nid) = node_id {
+            if !nid.is_empty() {
+                conditions.push(format!("ne.node_id = ?{}", param_idx));
+                params.push(Box::new(nid.to_string()));
+                param_idx += 1;
+            }
+        }
+        if let Some(sd) = start_date {
+            if !sd.is_empty() {
+                conditions.push(format!("m.created_at >= strftime('%s', ?{})", param_idx));
+                params.push(Box::new(sd.to_string()));
+                param_idx += 1;
+            }
+        }
+        if let Some(ed) = end_date {
+            if !ed.is_empty() {
+                conditions.push(format!("m.created_at < strftime('%s', ?{}, '+1 day')", param_idx));
+                params.push(Box::new(ed.to_string()));
+                param_idx += 1;
+            }
+        }
+
+        let where_clause = conditions.join(" AND ");
+
+        // Use a subquery to get one message per workflow_run_id deterministically
+        let sql = format!(
+            "SELECT ne.execution_id, ne.workflow_run_id, ne.node_id, ne.node_type, ne.title,
+                    ne.app_id, m.conversation_id, m.message_id, m.query,
+                    ne.inputs, ne.outputs, ne.process_data, ne.status, ne.elapsed_time, ne.created_at
+             FROM node_executions ne
+             INNER JOIN (
+                SELECT app_id, workflow_run_id,
+                       MIN(conversation_id) as conversation_id,
+                       MIN(message_id) as message_id,
+                       MIN(query) as query
+                FROM messages
+                WHERE workflow_run_id IS NOT NULL AND workflow_run_id != ''
+                GROUP BY app_id, workflow_run_id
+             ) m ON ne.app_id = m.app_id AND ne.workflow_run_id = m.workflow_run_id
+             WHERE {}
+             ORDER BY ne.created_at ASC",
+            where_clause
+        );
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let records = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                let inputs_str: String = row.get(9)?;
+                let outputs_str: String = row.get(10)?;
+                let process_data_str: String = row.get(11)?;
+                Ok(NodeEvalRecord {
+                    execution_id: row.get(0)?,
+                    workflow_run_id: row.get(1)?,
+                    node_id: row.get(2)?,
+                    node_type: row.get(3)?,
+                    node_title: row.get(4)?,
+                    app_id: row.get(5)?,
+                    conversation_id: row.get(6)?,
+                    message_id: row.get(7)?,
+                    query: row.get(8)?,
+                    inputs: parse_json(&inputs_str),
+                    outputs: parse_json(&outputs_str),
+                    process_data: parse_json(&process_data_str),
+                    status: row.get(12)?,
+                    elapsed_time: row.get(13)?,
+                    created_at: row.get(14)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(records)
     }
 
     // ===== Dashboard Stats =====

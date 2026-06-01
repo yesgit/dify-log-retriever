@@ -466,6 +466,34 @@ pub struct ConversationsResult {
     pub total: i64,
 }
 
+// ===== Node Eval Export =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeEvalRecord {
+    pub execution_id: String,
+    pub workflow_run_id: String,
+    pub node_id: String,
+    pub node_type: String,
+    pub node_title: String,
+    pub app_id: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub query: String,
+    pub inputs: serde_json::Value,
+    pub outputs: serde_json::Value,
+    pub process_data: serde_json::Value,
+    pub status: String,
+    pub elapsed_time: f64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeTypeSummary {
+    pub node_type: String,
+    pub node_id: String,
+    pub node_title: String,
+    pub count: i64,
+}
+
 // ===== Feedback Query Result =====
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackMessage {
