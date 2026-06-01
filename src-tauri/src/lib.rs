@@ -422,6 +422,7 @@ fn export_feedback_data(
     app_id: Option<String>,
     feedback_type: Option<String>,
     keyword: Option<String>,
+    save_path: Option<String>,
 ) -> Result<String, String> {
     // Fetch all matching feedback messages (no pagination)
     let result = state.db.get_feedback_messages(
@@ -436,10 +437,12 @@ fn export_feedback_data(
         return Err("没有找到匹配的反馈数据".to_string());
     }
 
+    let path = save_path.map(std::path::PathBuf::from);
+
     match format.as_str() {
-        "xlsx" => export::export_feedback_to_excel(&result.data),
-        "csv" => export::export_feedback_to_csv(&result.data),
-        "json" => export::export_feedback_to_json(&result.data),
+        "xlsx" => export::export_feedback_to_excel(&result.data, path.as_deref()),
+        "csv" => export::export_feedback_to_csv(&result.data, path.as_deref()),
+        "json" => export::export_feedback_to_json(&result.data, path.as_deref()),
         _ => Err(format!("不支持的格式: {}", format)),
     }
 }

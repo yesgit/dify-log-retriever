@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
 import {
   ThumbsUp,
   ThumbsDown,
@@ -14,6 +15,7 @@ import {
   FileJson,
   FileText,
   X,
+  MessageCircle,
 } from 'lucide-react';
 import type { FeedbackMessage, FeedbackResult } from '../types';
 
@@ -118,11 +120,32 @@ export function FeedbackPage() {
     setExporting(true);
     setExportMsg(null);
     try {
+      const ext = format;
+      const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
+      const defaultName = `feedback_export_${timestamp}.${ext}`;
+
+      // Open save dialog for user to pick save location
+      const savePath = await save({
+        defaultPath: defaultName,
+        filters: [
+          {
+            name: format.toUpperCase(),
+            extensions: [ext],
+          },
+        ],
+      });
+
+      if (!savePath) {
+        // User cancelled the dialog
+        return;
+      }
+
       const msg = await invoke<string>('export_feedback_data', {
         format,
         appId: selectedApp || null,
         feedbackType: feedbackType || null,
         keyword: searchKeyword || null,
+        savePath,
       });
       setExportMsg(msg);
     } catch (e: any) {
@@ -264,6 +287,28 @@ export function FeedbackPage() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm text-gray-800 line-clamp-2">{truncate(fb.query, 120)}</p>
+                    {/* Feedback content (label + content) */}
+                    {Array.isArray(fb.feedbacks) && fb.feedbacks.length > 0 && (
+                      <div className="mt-1.5 space-y-1">
+                        {fb.feedbacks.map((item: any, i: number) => (
+                          <div key={i} className="flex items-start gap-1.5 text-xs bg-amber-50 rounded px-2 py-1">
+                            <MessageCircle size={12} className="text-amber-500 shrink-0 mt-0.5" />
+                            <span className="text-gray-600 min-w-0">
+                              {item.label && (
+                                <span className="font-medium text-amber-700">{truncate(item.label, 30)}</span>
+                              )}
+                              {item.label && item.content && <span>：</span>}
+                              {item.content && (
+                                <span>{truncate(item.content, 80)}</span>
+                              )}
+                              {!item.label && !item.content && (
+                                <span className="text-gray-400 italic">无反馈内容</span>
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-xs text-gray-400">{fb.app_name}</span>
                       <span className="text-xs text-gray-300">·</span>
@@ -384,8 +429,17 @@ export function FeedbackPage() {
                           {item.from_source && <span>来源: {item.from_source}</span>}
                           {item.created_at && <span>时间: {formatTime(item.created_at)}</span>}
                         </div>
+                        {item.label && (
+                          <div className="mb-1">
+                            <span className="text-xs font-medium text-amber-700">标签：</span>
+                            <span className="text-sm text-gray-700">{item.label}</span>
+                          </div>
+                        )}
                         {item.content && (
-                          <p className="text-sm text-gray-700 whitespace-pre-wrap">{item.content}</p>
+                          <div className="mb-1">
+                            <span className="text-xs font-medium text-amber-700">内容：</span>
+                            <p className="text-sm text-gray-700 whitespace-pre-wrap">{item.content}</p>
+                          </div>
                         )}
                         <details className="mt-2">
                           <summary className="cursor-pointer text-xs text-gray-400">查看原始数据</summary>

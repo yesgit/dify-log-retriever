@@ -125,10 +125,19 @@ fn extract_feedback_content(feedbacks: &serde_json::Value) -> String {
             items
                 .iter()
                 .filter_map(|f| {
-                    f.get("content")
+                    let label = f.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                    let content = f
+                        .get("content")
                         .or_else(|| f.get("message"))
                         .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
+                        .unwrap_or("");
+                    let parts: Vec<&str> = match (label, content) {
+                        ("", "") => return None,
+                        ("", c) => vec![c],
+                        (l, "") => vec![l],
+                        (l, c) => vec![l, c],
+                    };
+                    Some(parts.join(": "))
                 })
                 .collect::<Vec<_>>()
                 .join("; ")
@@ -136,7 +145,7 @@ fn extract_feedback_content(feedbacks: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
-pub fn export_feedback_to_excel(messages: &[FeedbackMessage]) -> Result<String, String> {
+pub fn export_feedback_to_excel(messages: &[FeedbackMessage], save_path: Option<&std::path::Path>) -> Result<String, String> {
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet().set_name("用户反馈").map_err(|e| e.to_string())?;
 
@@ -235,13 +244,13 @@ pub fn export_feedback_to_excel(messages: &[FeedbackMessage]) -> Result<String, 
     worksheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
 
     let default_filename = format!("feedback_export_{}.xlsx", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-    let save_path = pick_save_path(&default_filename)?;
-    workbook.save(&save_path).map_err(|e| format!("保存 Excel 失败: {}", e))?;
+    let path = save_path.map(|p| p.to_path_buf()).unwrap_or_else(|| pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename)));
+    workbook.save(&path).map_err(|e| format!("保存 Excel 失败: {}", e))?;
 
-    Ok(format!("已导出到: {}", save_path.display()))
+    Ok(format!("已导出到: {}", path.display()))
 }
 
-pub fn export_feedback_to_csv(messages: &[FeedbackMessage]) -> Result<String, String> {
+pub fn export_feedback_to_csv(messages: &[FeedbackMessage], save_path: Option<&std::path::Path>) -> Result<String, String> {
     let mut lines: Vec<String> = vec![
         "\"应用名称\",\"反馈类型\",\"用户提问\",\"AI回答\",\"反馈内容\",\"Prompt Tokens\",\"Answer Tokens\",\"耗时(秒)\",\"创建时间\"".to_string()
     ];
@@ -269,12 +278,12 @@ pub fn export_feedback_to_csv(messages: &[FeedbackMessage]) -> Result<String, St
     }
 
     let default_filename = format!("feedback_export_{}.csv", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-    let save_path = pick_save_path(&default_filename)?;
-    fs::write(&save_path, lines.join("\n")).map_err(|e| format!("写入文件失败: {}", e))?;
-    Ok(format!("已导出到: {}", save_path.display()))
+    let path = save_path.map(|p| p.to_path_buf()).unwrap_or_else(|| pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename)));
+    fs::write(&path, lines.join("\n")).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(format!("已导出到: {}", path.display()))
 }
 
-pub fn export_feedback_to_json(messages: &[FeedbackMessage]) -> Result<String, String> {
+pub fn export_feedback_to_json(messages: &[FeedbackMessage], save_path: Option<&std::path::Path>) -> Result<String, String> {
     let data: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
@@ -295,7 +304,7 @@ pub fn export_feedback_to_json(messages: &[FeedbackMessage]) -> Result<String, S
     let content = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
 
     let default_filename = format!("feedback_export_{}.json", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-    let save_path = pick_save_path(&default_filename)?;
-    fs::write(&save_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
-    Ok(format!("已导出到: {}", save_path.display()))
+    let path = save_path.map(|p| p.to_path_buf()).unwrap_or_else(|| pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename)));
+    fs::write(&path, content).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(format!("已导出到: {}", path.display()))
 }
