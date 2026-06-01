@@ -487,6 +487,65 @@ fn export_node_eval_data(
 }
 
 #[tauri::command]
+fn get_auto_sync_settings(state: State<AppState>) -> Result<AutoSyncSettings, String> {
+    state.db.get_auto_sync_settings()
+}
+
+#[tauri::command]
+fn save_auto_sync_settings(state: State<AppState>, settings: AutoSyncSettings) -> Result<(), String> {
+    state.db.save_auto_sync_settings(&settings)
+}
+
+/// Sync all local apps (used by auto-sync). Returns a summary.
+#[tauri::command]
+async fn sync_all_apps(state: State<'_, AppState>, incremental: Option<bool>) -> Result<String, String> {
+    let apps = state.db.get_apps()?;
+    if apps.is_empty() {
+        return Ok("没有需要同步的应用".to_string());
+    }
+
+    let is_incremental = incremental.unwrap_or(true);
+    let mut success_count = 0;
+    let mut error_count = 0;
+    let mut total_synced_conv = 0;
+    let mut total_synced_msg = 0;
+    let mut error_details: Vec<String> = Vec::new();
+
+    for app in &apps {
+        match sync_app_data(
+            state.clone(),
+            app.id.clone(),
+            Some(is_incremental),
+        )
+        .await
+        {
+            Ok(result) => {
+                success_count += 1;
+                total_synced_conv += result.synced_conversations;
+                total_synced_msg += result.synced_messages;
+            }
+            Err(e) => {
+                error_count += 1;
+                error_details.push(format!("{}: {}", app.name, e));
+            }
+        }
+    }
+
+    // Update last synced timestamp
+    let now = chrono::Utc::now().timestamp();
+    let _ = state.db.update_auto_sync_last_synced(now);
+
+    let mut summary = format!(
+        "同步完成: {} 个应用成功, {} 个失败, 同步 {} 个对话, {} 条消息",
+        success_count, error_count, total_synced_conv, total_synced_msg
+    );
+    if !error_details.is_empty() {
+        summary.push_str(&format!("。失败详情: {}", error_details.join("; ")));
+    }
+    Ok(summary)
+}
+
+#[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -519,6 +578,9 @@ pub fn run() {
             export_feedback_data,
             get_app_node_types,
             export_node_eval_data,
+            get_auto_sync_settings,
+            save_auto_sync_settings,
+            sync_all_apps,
             get_app_version,
         ])
         .run(tauri::generate_context!())

@@ -504,6 +504,16 @@ pub struct NodeTypeSummary {
     pub count: i64,
 }
 
+// ===== Auto Sync Settings =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoSyncSettings {
+    pub enabled: bool,
+    pub interval_minutes: i64,
+    pub mode: String, // "incremental" or "full"
+    #[serde(default)]
+    pub last_synced_at: Option<i64>,
+}
+
 // ===== Feedback Query Result =====
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackMessage {

@@ -202,6 +202,14 @@ export interface FeedbackLabelStat {
   count: number;
 }
 
+// ===== Auto Sync Settings =====
+export interface AutoSyncSettings {
+  enabled: boolean;
+  interval_minutes: number;
+  mode: string;
+  last_synced_at?: number | null;
+}
+
 // ===== Export Options =====
 export interface ExportOptions {
   format: 'json' | 'csv' | 'jsonl';

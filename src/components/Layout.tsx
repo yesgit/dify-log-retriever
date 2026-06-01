@@ -10,11 +10,16 @@ import {
   Download,
   FileText,
   ThumbsUp,
+  Loader2,
+  CheckCircle,
+  XCircle,
 } from 'lucide-react';
 
 interface LayoutProps {
   currentPage: Page;
   onNavigate: (page: Page) => void;
+  autoSyncStatus?: 'idle' | 'syncing' | 'success' | 'error';
+  lastAutoSyncResult?: string;
   children: React.ReactNode;
 }
 
@@ -28,7 +33,7 @@ const navItems: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'export', label: '数据导出', icon: <Download size={20} /> },
 ];
 
-export function Layout({ currentPage, onNavigate, children }: LayoutProps) {
+export function Layout({ currentPage, onNavigate, autoSyncStatus, lastAutoSyncResult, children }: LayoutProps) {
   const [version, setVersion] = useState('...');
 
   useEffect(() => {
@@ -67,6 +72,38 @@ export function Layout({ currentPage, onNavigate, children }: LayoutProps) {
             </button>
           ))}
         </nav>
+
+        {/* Auto Sync Status */}
+        {autoSyncStatus && autoSyncStatus !== 'idle' && (
+          <div className="px-3 py-2 border-t border-gray-100">
+            <div className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs ${
+              autoSyncStatus === 'syncing'
+                ? 'bg-blue-50 text-blue-700'
+                : autoSyncStatus === 'success'
+                ? 'bg-green-50 text-green-700'
+                : 'bg-red-50 text-red-700'
+            }`}>
+              {autoSyncStatus === 'syncing' && (
+                <>
+                  <Loader2 size={12} className="animate-spin" />
+                  <span>自动同步中...</span>
+                </>
+              )}
+              {autoSyncStatus === 'success' && (
+                <>
+                  <CheckCircle size={12} />
+                  <span className="truncate">{lastAutoSyncResult || '自动同步完成'}</span>
+                </>
+              )}
+              {autoSyncStatus === 'error' && (
+                <>
+                  <XCircle size={12} />
+                  <span className="truncate">{lastAutoSyncResult || '自动同步失败'}</span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-gray-200">

@@ -310,6 +310,75 @@ impl Database {
         }))
     }
 
+    // ===== Auto Sync Settings =====
+    pub fn get_auto_sync_settings(&self) -> Result<AutoSyncSettings, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let enabled: bool = conn
+            .query_row("SELECT value FROM settings WHERE key = 'auto_sync_enabled'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(false);
+        let interval_minutes: i64 = conn
+            .query_row("SELECT value FROM settings WHERE key = 'auto_sync_interval'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        let mode: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'auto_sync_mode'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .unwrap_or_else(|| "incremental".to_string());
+        let last_synced_at: Option<i64> = conn
+            .query_row("SELECT value FROM settings WHERE key = 'auto_sync_last_synced'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .and_then(|v| v.parse().ok());
+        Ok(AutoSyncSettings {
+            enabled,
+            interval_minutes,
+            mode,
+            last_synced_at,
+        })
+    }
+
+    pub fn save_auto_sync_settings(&self, settings: &AutoSyncSettings) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["auto_sync_enabled", settings.enabled.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["auto_sync_interval", settings.interval_minutes.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["auto_sync_mode", &settings.mode],
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(ts) = settings.last_synced_at {
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params!["auto_sync_last_synced", ts.to_string()],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute("DELETE FROM settings WHERE key = 'auto_sync_last_synced'", [])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn update_auto_sync_last_synced(&self, ts: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["auto_sync_last_synced", ts.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Update only the API key in the config (used for auto-refresh after login)
     pub fn update_api_key(&self, new_key: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
