@@ -9,6 +9,7 @@ import {
   BarChart3,
   Download,
   FileText,
+  ThumbsUp,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -22,6 +23,7 @@ const navItems: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'apps', label: '应用管理', icon: <AppWindow size={20} /> },
   { page: 'sync', label: '数据同步', icon: <RefreshCw size={20} /> },
   { page: 'conversations', label: '对话浏览', icon: <MessageSquare size={20} /> },
+  { page: 'feedback', label: '用户反馈', icon: <ThumbsUp size={20} /> },
   { page: 'dashboard', label: '数据看板', icon: <BarChart3 size={20} /> },
   { page: 'export', label: '数据导出', icon: <Download size={20} /> },
 ];

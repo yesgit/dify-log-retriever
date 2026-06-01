@@ -1,5 +1,5 @@
 // ===== Page State =====
-export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'export';
+export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'export' | 'feedback';
 
 // ===== Config =====
 export interface DifyConfig {
@@ -157,4 +157,26 @@ export interface ExportOptions {
   keyword?: string;
   include_metadata: boolean;
   include_agent_thoughts: boolean;
+}
+
+// ===== Feedback =====
+export interface FeedbackMessage {
+  id: string;
+  app_id: string;
+  app_name: string;
+  conversation_id: string;
+  message_id: string;
+  query: string;
+  answer: string;
+  feedback: string | null;
+  feedbacks: any[];
+  answer_tokens: number;
+  prompt_tokens: number;
+  elapsed_time: number;
+  created_at: number;
+}
+
+export interface FeedbackResult {
+  data: FeedbackMessage[];
+  total: number;
 }

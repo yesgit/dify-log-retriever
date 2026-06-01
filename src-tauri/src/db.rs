@@ -139,6 +139,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id);
             CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
             CREATE INDEX IF NOT EXISTS idx_messages_workflow_run_id ON messages(workflow_run_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_feedback ON messages(feedback);
             CREATE INDEX IF NOT EXISTS idx_workflow_runs_app_run ON workflow_runs(app_id, workflow_run_id);
             CREATE INDEX IF NOT EXISTS idx_node_executions_app_run ON node_executions(app_id, workflow_run_id);
             ",
@@ -849,6 +850,94 @@ impl Database {
             .into_iter()
             .map(|m| self.message_detail_without_workflow(m))
             .collect())
+    }
+
+    // ===== Feedback Messages =====
+    pub fn get_feedback_messages(
+        &self,
+        app_id: Option<&str>,
+        feedback_type: Option<&str>,
+        keyword: Option<&str>,
+        page: i64,
+        page_size: i64,
+    ) -> Result<FeedbackResult, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let offset = (page - 1) * page_size;
+
+        let mut conditions = vec!["m.feedback IS NOT NULL".to_string()];
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(aid) = app_id {
+            if !aid.is_empty() {
+                conditions.push("m.app_id = ?".to_string());
+                params.push(Box::new(aid.to_string()));
+            }
+        }
+        if let Some(ft) = feedback_type {
+            if !ft.is_empty() {
+                conditions.push("m.feedback = ?".to_string());
+                params.push(Box::new(ft.to_string()));
+            }
+        }
+        if let Some(kw) = keyword {
+            if !kw.is_empty() {
+                conditions.push("(m.query LIKE ? OR m.answer LIKE ?)".to_string());
+                let pattern = format!("%{}%", kw);
+                params.push(Box::new(pattern.clone()));
+                params.push(Box::new(pattern));
+            }
+        }
+
+        let where_clause = conditions.join(" AND ");
+
+        let count_sql = format!("SELECT COUNT(*) FROM messages m WHERE {}", where_clause);
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let total: i64 = conn
+            .query_row(&count_sql, param_refs.as_slice(), |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+
+        let data_sql = format!(
+            "SELECT m.id, m.app_id, m.conversation_id, m.message_id, m.query, m.answer,
+             m.feedback, m.feedbacks, m.answer_tokens, m.prompt_tokens, m.elapsed_time, m.created_at,
+             COALESCE(a.name, 'Unknown') as app_name
+             FROM messages m
+             LEFT JOIN apps a ON m.app_id = a.id
+             WHERE {}
+             ORDER BY m.created_at DESC
+             LIMIT ? OFFSET ?",
+            where_clause
+        );
+
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = params;
+        all_params.push(Box::new(page_size));
+        all_params.push(Box::new(offset));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&data_sql).map_err(|e| e.to_string())?;
+        let data: Vec<FeedbackMessage> = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                let feedbacks_str: String = row.get(7)?;
+                Ok(FeedbackMessage {
+                    id: row.get(0)?,
+                    app_id: row.get(1)?,
+                    conversation_id: row.get(2)?,
+                    message_id: row.get(3)?,
+                    query: row.get(4)?,
+                    answer: row.get(5)?,
+                    feedback: row.get(6)?,
+                    feedbacks: parse_json(&feedbacks_str),
+                    answer_tokens: row.get(8)?,
+                    prompt_tokens: row.get(9)?,
+                    elapsed_time: row.get(10)?,
+                    created_at: row.get(11)?,
+                    app_name: row.get(12)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(FeedbackResult { data, total })
     }
 
     // ===== Dashboard Stats =====

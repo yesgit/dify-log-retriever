@@ -5,6 +5,7 @@ import { ConfigPage } from './components/ConfigPage';
 import { AppsPage } from './components/AppsPage';
 import { SyncPage } from './components/SyncPage';
 import { ConversationsPage } from './components/ConversationsPage';
+import { FeedbackPage } from './components/FeedbackPage';
 import { DashboardPage } from './components/DashboardPage';
 import { ExportPage } from './components/ExportPage';
 
@@ -21,6 +22,8 @@ function App() {
         return <SyncPage />;
       case 'conversations':
         return <ConversationsPage />;
+      case 'feedback':
+        return <FeedbackPage />;
       case 'dashboard':
         return <DashboardPage />;
       case 'export':

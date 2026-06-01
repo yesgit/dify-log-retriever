@@ -235,6 +235,53 @@ fn export_data(
 }
 
 #[tauri::command]
+fn get_feedback_messages(
+    state: State<AppState>,
+    app_id: Option<String>,
+    feedback_type: Option<String>,
+    keyword: Option<String>,
+    page: i64,
+    page_size: i64,
+) -> Result<FeedbackResult, String> {
+    state.db.get_feedback_messages(
+        app_id.as_deref(),
+        feedback_type.as_deref(),
+        keyword.as_deref(),
+        page,
+        page_size,
+    )
+}
+
+#[tauri::command]
+fn export_feedback_data(
+    state: State<AppState>,
+    format: String,
+    app_id: Option<String>,
+    feedback_type: Option<String>,
+    keyword: Option<String>,
+) -> Result<String, String> {
+    // Fetch all matching feedback messages (no pagination)
+    let result = state.db.get_feedback_messages(
+        app_id.as_deref(),
+        feedback_type.as_deref(),
+        keyword.as_deref(),
+        1,
+        1000000,
+    )?;
+
+    if result.data.is_empty() {
+        return Err("没有找到匹配的反馈数据".to_string());
+    }
+
+    match format.as_str() {
+        "xlsx" => export::export_feedback_to_excel(&result.data),
+        "csv" => export::export_feedback_to_csv(&result.data),
+        "json" => export::export_feedback_to_json(&result.data),
+        _ => Err(format!("不支持的格式: {}", format)),
+    }
+}
+
+#[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -261,6 +308,8 @@ pub fn run() {
             get_messages,
             get_dashboard_stats,
             export_data,
+            get_feedback_messages,
+            export_feedback_data,
             get_app_version,
         ])
         .run(tauri::generate_context!())

@@ -400,3 +400,27 @@ pub struct ConversationsResult {
     pub data: Vec<ConversationSummary>,
     pub total: i64,
 }
+
+// ===== Feedback Query Result =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackMessage {
+    pub id: String,
+    pub app_id: String,
+    pub app_name: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub query: String,
+    pub answer: String,
+    pub feedback: Option<String>,
+    pub feedbacks: serde_json::Value,
+    pub answer_tokens: i64,
+    pub prompt_tokens: i64,
+    pub elapsed_time: f64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackResult {
+    pub data: Vec<FeedbackMessage>,
+    pub total: i64,
+}
