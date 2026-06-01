@@ -357,8 +357,13 @@ fn get_messages(
 }
 
 #[tauri::command]
-fn get_dashboard_stats(state: State<AppState>) -> Result<DashboardStats, String> {
-    state.db.get_dashboard_stats()
+fn get_dashboard_stats(
+    state: State<AppState>,
+    app_id: Option<String>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+) -> Result<DashboardStats, String> {
+    state.db.get_dashboard_stats(app_id.as_deref(), start_time, end_time)
 }
 
 #[tauri::command]

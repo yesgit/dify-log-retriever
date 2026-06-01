@@ -13,6 +13,8 @@ export interface DifyConfigDisplay {
   api_key_masked: string;
   proxy?: string;
   has_key: boolean;
+  auth_mode: string;
+  auth_email?: string;
 }
 
 // ===== App =====
@@ -125,15 +127,54 @@ export interface SyncResult {
 }
 
 // ===== Dashboard Stats =====
+export interface StatDistribution {
+  min: number;
+  max: number;
+  avg: number;
+  p50: number;
+  p80: number;
+  p95: number;
+  count: number;
+}
+
 export interface DashboardStats {
+  // Basic counts
   total_apps: number;
+  total_users: number;
   total_conversations: number;
   total_messages: number;
+  total_queries: number;
+  // Token totals
   total_answer_tokens: number;
   total_prompt_tokens: number;
+  total_tokens: number;
+  daily_avg_tokens: number;
+  // Averages
+  avg_queries_per_conversation: number;
+  avg_conversations_per_user: number;
+  avg_queries_per_user: number;
+  // Feedback counts
+  feedback_total: number;
   feedback_like: number;
   feedback_dislike: number;
   feedback_none: number;
+  feedback_with_content: number;
+  feedback_like_rate: number;
+  avg_feedback_per_user: number;
+  avg_feedback_per_conversation: number;
+  avg_feedback_per_query: number;
+  // Error stats
+  error_count: number;
+  error_rate: number;
+  // Distributions
+  ttft_distribution: StatDistribution | null;
+  elapsed_time_distribution: StatDistribution | null;
+  token_per_message_distribution: StatDistribution | null;
+  token_speed_distribution: StatDistribution | null;
+  user_feedback_count_distribution: StatDistribution | null;
+  conversation_feedback_count_distribution: StatDistribution | null;
+  message_feedback_count_distribution: StatDistribution | null;
+  // Rankings & trends
   top_apps: AppRanking[];
   recent_daily: DailyStats[];
 }
@@ -149,6 +190,8 @@ export interface DailyStats {
   date: string;
   conversations: number;
   messages: number;
+  tokens: number;
+  queries: number;
 }
 
 // ===== Export Options =====

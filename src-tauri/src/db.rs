@@ -140,6 +140,8 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
             CREATE INDEX IF NOT EXISTS idx_messages_workflow_run_id ON messages(workflow_run_id);
             CREATE INDEX IF NOT EXISTS idx_messages_feedback ON messages(feedback);
+            CREATE INDEX IF NOT EXISTS idx_messages_app_created ON messages(app_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_conversations_app_created ON conversations(app_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_workflow_runs_app_run ON workflow_runs(app_id, workflow_run_id);
             CREATE INDEX IF NOT EXISTS idx_node_executions_app_run ON node_executions(app_id, workflow_run_id);
             ",
@@ -1010,26 +1012,208 @@ impl Database {
     }
 
     // ===== Dashboard Stats =====
-    pub fn get_dashboard_stats(&self) -> Result<DashboardStats, String> {
+    pub fn get_dashboard_stats(
+        &self,
+        app_id: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> Result<DashboardStats, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let total_apps: i64 = conn.query_row("SELECT COUNT(*) FROM apps", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-        let total_conversations: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-        let total_messages: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-        let total_answer_tokens: i64 = conn.query_row("SELECT COALESCE(SUM(answer_tokens), 0) FROM messages", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-        let total_prompt_tokens: i64 = conn.query_row("SELECT COALESCE(SUM(prompt_tokens), 0) FROM messages", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-        let feedback_like: i64 = conn.query_row("SELECT COUNT(*) FROM messages WHERE feedback = 'like'", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-        let feedback_dislike: i64 = conn.query_row("SELECT COUNT(*) FROM messages WHERE feedback = 'dislike'", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-        let feedback_none: i64 = conn.query_row("SELECT COUNT(*) FROM messages WHERE feedback IS NULL", [], |row| row.get(0)).map_err(|e| e.to_string())?;
 
-        let mut stmt = conn.prepare(
+        // Build WHERE clauses
+        // Note: app_id comes from DB-sourced dropdown values, timestamps are i64 - safe from injection
+        let msg_where = build_where(app_id, start_time, end_time);
+        let conv_where = build_conv_where(app_id, start_time, end_time);
+
+        // ── Basic counts ──
+        let total_apps: i64 = conn.query_row("SELECT COUNT(*) FROM apps", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+
+        let total_conversations: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM conversations c WHERE {}", conv_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        let total_messages: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM messages WHERE {}", msg_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        // Queries = messages with non-empty query
+        let total_queries: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM messages WHERE query != '' AND {}", msg_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        // Users: distinct from_end_user_id from conversations
+        let total_users: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(DISTINCT from_end_user_id) FROM conversations c WHERE from_end_user_id != '' AND {}",
+                conv_where
+            ),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        // ── Token totals ──
+        let total_answer_tokens: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(answer_tokens), 0) FROM messages WHERE {}", msg_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let total_prompt_tokens: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(prompt_tokens), 0) FROM messages WHERE {}", msg_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let total_tokens = total_answer_tokens + total_prompt_tokens;
+
+        // Days in range for daily average: compute from filter or actual data span
+        let days_in_range = if let (Some(s), Some(e)) = (start_time, end_time) {
+            ((e - s) as f64 / 86400.0).max(1.0)
+        } else if let Some(s) = start_time {
+            let now_ts: i64 = conn.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
+            ((now_ts - s) as f64 / 86400.0).max(1.0)
+        } else {
+            // No time filter: compute from actual data span
+            let span: (i64, i64) = conn.query_row(
+                &format!("SELECT COALESCE(MIN(created_at), 0), COALESCE(MAX(created_at), 0) FROM messages WHERE {}", msg_where),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).unwrap_or((0, 0));
+            if span.1 > span.0 {
+                ((span.1 - span.0) as f64 / 86400.0).max(1.0)
+            } else {
+                1.0
+            }
+        };
+        let daily_avg_tokens = total_tokens as f64 / days_in_range;
+
+        // ── Averages ──
+        let avg_queries_per_conversation = if total_conversations > 0 { total_queries as f64 / total_conversations as f64 } else { 0.0 };
+        let avg_conversations_per_user = if total_users > 0 { total_conversations as f64 / total_users as f64 } else { 0.0 };
+        let avg_queries_per_user = if total_users > 0 { total_queries as f64 / total_users as f64 } else { 0.0 };
+
+        // ── Feedback counts ──
+        let feedback_like: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM messages WHERE feedback = 'like' AND {}", msg_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let feedback_dislike: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM messages WHERE feedback = 'dislike' AND {}", msg_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let feedback_none: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM messages WHERE feedback IS NULL AND {}", msg_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let feedback_total = feedback_like + feedback_dislike;
+        let feedback_like_rate = if feedback_total > 0 { feedback_like as f64 / feedback_total as f64 * 100.0 } else { 0.0 };
+
+        // Feedback with content: feedbacks JSON array has at least one item with content
+        let feedback_with_content: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM messages WHERE feedback IS NOT NULL AND json_array_length(feedbacks) > 0 AND {}",
+                msg_where
+            ),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string()).unwrap_or(0);
+
+        let avg_feedback_per_user = if total_users > 0 { feedback_total as f64 / total_users as f64 } else { 0.0 };
+        let avg_feedback_per_conversation = if total_conversations > 0 { feedback_total as f64 / total_conversations as f64 } else { 0.0 };
+        let avg_feedback_per_query = if total_queries > 0 { feedback_total as f64 / total_queries as f64 } else { 0.0 };
+
+        // ── Error stats ──
+        let error_count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM messages WHERE error IS NOT NULL AND error != 'null' AND error != '' AND {}", msg_where),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let error_rate = if total_messages > 0 { error_count as f64 / total_messages as f64 * 100.0 } else { 0.0 };
+
+        // ── Distributions ──
+        // TTFT (provider_response_latency)
+        let ttft_distribution = compute_distribution(
+            &conn,
+            &format!("SELECT provider_response_latency FROM messages WHERE provider_response_latency > 0 AND {}", msg_where),
+        )?;
+
+        // Elapsed time
+        let elapsed_time_distribution = compute_distribution(
+            &conn,
+            &format!("SELECT elapsed_time FROM messages WHERE elapsed_time > 0 AND {}", msg_where),
+        )?;
+
+        // Tokens per message
+        let token_per_message_distribution = compute_distribution(
+            &conn,
+            &format!("SELECT (answer_tokens + prompt_tokens) FROM messages WHERE (answer_tokens + prompt_tokens) > 0 AND {}", msg_where),
+        )?;
+
+        // Token speed (tokens/s) = answer_tokens / elapsed_time
+        let token_speed_distribution = compute_distribution(
+            &conn,
+            &format!("SELECT CAST(answer_tokens AS REAL) / elapsed_time FROM messages WHERE elapsed_time > 0 AND answer_tokens > 0 AND {}", msg_where),
+        )?;
+
+        // User feedback count distribution
+        let user_feedback_count_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(feedback_count AS REAL) FROM (
+                    SELECT c.from_end_user_id, COUNT(m.id) as feedback_count
+                    FROM conversations c
+                    LEFT JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id AND m.feedback IS NOT NULL
+                    WHERE c.from_end_user_id != '' AND {}
+                    GROUP BY c.from_end_user_id
+                ) sub",
+                conv_where
+            ),
+        )?;
+
+        // Conversation feedback count distribution
+        let conversation_feedback_count_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(feedback_count AS REAL) FROM (
+                    SELECT c.app_id, c.conversation_id, COUNT(m.id) as feedback_count
+                    FROM conversations c
+                    LEFT JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id AND m.feedback IS NOT NULL
+                    WHERE {}
+                    GROUP BY c.app_id, c.conversation_id
+                ) sub",
+                conv_where
+            ),
+        )?;
+
+        // Message feedback count distribution (feedbacks array length per message with feedback)
+        let message_feedback_count_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(json_array_length(feedbacks) AS REAL) FROM messages WHERE feedback IS NOT NULL AND json_array_length(feedbacks) >= 0 AND {}",
+                msg_where
+            ),
+        )?;
+
+        // ── Top apps ──
+        let top_apps_sql = format!(
             "SELECT c.app_id, a.name, COUNT(DISTINCT c.conversation_id) as conv_count, COUNT(m.id) as msg_count
              FROM conversations c
              LEFT JOIN apps a ON c.app_id = a.id
-             LEFT JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id
+             LEFT JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id AND m.query != ''
+             WHERE {}
              GROUP BY c.app_id
              ORDER BY conv_count DESC
-             LIMIT 10"
-        ).map_err(|e| e.to_string())?;
+             LIMIT 10",
+            conv_where
+        );
+        let mut stmt = conn.prepare(&top_apps_sql).map_err(|e| e.to_string())?;
         let top_apps: Vec<AppRanking> = stmt.query_map([], |row| {
             Ok(AppRanking {
                 app_id: row.get(0)?,
@@ -1041,20 +1225,28 @@ impl Database {
         .filter_map(|r| r.ok())
         .collect();
 
+        // ── Daily trend ──
         let mut stmt = conn.prepare(
-            "SELECT date(created_at, 'unixepoch', 'localtime') as day,
-             COUNT(DISTINCT conversation_id) as conv_count,
-             COUNT(*) as msg_count
-             FROM messages
-             WHERE created_at >= strftime('%s', 'now', '-7 days')
-             GROUP BY day
-             ORDER BY day DESC"
+            &format!(
+                "SELECT date(created_at, 'unixepoch', 'localtime') as day,
+                 COUNT(DISTINCT conversation_id) as conv_count,
+                 COUNT(*) as msg_count,
+                 COALESCE(SUM(answer_tokens + prompt_tokens), 0) as token_sum,
+                 SUM(CASE WHEN query != '' THEN 1 ELSE 0 END) as query_count
+                 FROM messages
+                WHERE {}
+                GROUP BY day
+                ORDER BY day ASC",
+                msg_where
+            ),
         ).map_err(|e| e.to_string())?;
         let recent_daily: Vec<DailyStats> = stmt.query_map([], |row| {
             Ok(DailyStats {
                 date: row.get(0)?,
                 conversations: row.get(1)?,
                 messages: row.get(2)?,
+                tokens: row.get(3)?,
+                queries: row.get(4)?,
             })
         }).map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -1062,17 +1254,111 @@ impl Database {
 
         Ok(DashboardStats {
             total_apps,
+            total_users,
             total_conversations,
             total_messages,
+            total_queries,
             total_answer_tokens,
             total_prompt_tokens,
+            total_tokens,
+            daily_avg_tokens,
+            avg_queries_per_conversation,
+            avg_conversations_per_user,
+            avg_queries_per_user,
+            feedback_total,
             feedback_like,
             feedback_dislike,
             feedback_none,
+            feedback_with_content,
+            feedback_like_rate,
+            avg_feedback_per_user,
+            avg_feedback_per_conversation,
+            avg_feedback_per_query,
+            error_count,
+            error_rate,
+            ttft_distribution,
+            elapsed_time_distribution,
+            token_per_message_distribution,
+            token_speed_distribution,
+            user_feedback_count_distribution,
+            conversation_feedback_count_distribution,
+            message_feedback_count_distribution,
             top_apps,
             recent_daily,
         })
     }
+}
+
+fn build_where(app_id: Option<&str>, start_time: Option<i64>, end_time: Option<i64>) -> String {
+    let mut conditions = vec!["1=1".to_string()];
+    if let Some(aid) = app_id {
+        conditions.push(format!("app_id = '{}'", aid));
+    }
+    if let Some(st) = start_time {
+        conditions.push(format!("created_at >= {}", st));
+    }
+    if let Some(et) = end_time {
+        conditions.push(format!("created_at <= {}", et));
+    }
+    conditions.join(" AND ")
+}
+
+fn build_conv_where(app_id: Option<&str>, start_time: Option<i64>, end_time: Option<i64>) -> String {
+    let mut conditions = vec!["1=1".to_string()];
+    if let Some(aid) = app_id {
+        conditions.push(format!("c.app_id = '{}'", aid));
+    }
+    if let Some(st) = start_time {
+        conditions.push(format!("c.created_at >= {}", st));
+    }
+    if let Some(et) = end_time {
+        conditions.push(format!("c.created_at <= {}", et));
+    }
+    conditions.join(" AND ")
+}
+
+fn compute_distribution(conn: &Connection, sql: &str) -> Result<Option<StatDistribution>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let values: Vec<f64> = stmt
+        .query_map([], |row| row.get::<_, f64>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if values.is_empty() {
+        return Ok(None);
+    }
+
+    let count = values.len() as i64;
+    let mut sorted = values;
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let min = sorted[0];
+    let max = sorted[sorted.len() - 1];
+    let sum: f64 = sorted.iter().sum();
+    let avg = sum / count as f64;
+
+    let p50 = percentile(&sorted, 50.0);
+    let p80 = percentile(&sorted, 80.0);
+    let p95 = percentile(&sorted, 95.0);
+
+    Ok(Some(StatDistribution {
+        min,
+        max,
+        avg,
+        p50,
+        p80,
+        p95,
+        count,
+    }))
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = (p / 100.0 * (sorted.len() - 1) as f64) as usize;
+    sorted[idx.min(sorted.len() - 1)]
 }
 
 fn feedback_rating_from_array(feedbacks: &serde_json::Value) -> Option<String> {

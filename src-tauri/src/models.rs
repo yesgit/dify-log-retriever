@@ -387,15 +387,55 @@ pub struct SyncResult {
 
 // ===== Dashboard Stats =====
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatDistribution {
+    pub min: f64,
+    pub max: f64,
+    pub avg: f64,
+    pub p50: f64,
+    pub p80: f64,
+    pub p95: f64,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardStats {
+    // Basic counts
     pub total_apps: i64,
+    pub total_users: i64,
     pub total_conversations: i64,
     pub total_messages: i64,
+    pub total_queries: i64,
+    // Token totals
     pub total_answer_tokens: i64,
     pub total_prompt_tokens: i64,
+    pub total_tokens: i64,
+    pub daily_avg_tokens: f64,
+    // Averages
+    pub avg_queries_per_conversation: f64,
+    pub avg_conversations_per_user: f64,
+    pub avg_queries_per_user: f64,
+    // Feedback counts
+    pub feedback_total: i64,
     pub feedback_like: i64,
     pub feedback_dislike: i64,
     pub feedback_none: i64,
+    pub feedback_with_content: i64,
+    pub feedback_like_rate: f64,
+    pub avg_feedback_per_user: f64,
+    pub avg_feedback_per_conversation: f64,
+    pub avg_feedback_per_query: f64,
+    // Error stats
+    pub error_count: i64,
+    pub error_rate: f64,
+    // Distributions
+    pub ttft_distribution: Option<StatDistribution>,       // 首Token时间
+    pub elapsed_time_distribution: Option<StatDistribution>, // 总响应时间
+    pub token_per_message_distribution: Option<StatDistribution>, // 每条消息Token消耗
+    pub token_speed_distribution: Option<StatDistribution>,  // Token生成速度 (tokens/s)
+    pub user_feedback_count_distribution: Option<StatDistribution>, // 用户反馈数分布
+    pub conversation_feedback_count_distribution: Option<StatDistribution>, // 会话反馈数分布
+    pub message_feedback_count_distribution: Option<StatDistribution>, // 消息反馈数分布
+    // Rankings & trends
     pub top_apps: Vec<AppRanking>,
     pub recent_daily: Vec<DailyStats>,
 }
@@ -413,6 +453,10 @@ pub struct DailyStats {
     pub date: String,
     pub conversations: i64,
     pub messages: i64,
+    #[serde(default)]
+    pub tokens: i64,
+    #[serde(default)]
+    pub queries: i64,
 }
 
 // ===== Conversations Query Result =====
