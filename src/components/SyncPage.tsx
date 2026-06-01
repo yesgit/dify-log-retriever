@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { RefreshCw, Loader2, CheckCircle, XCircle, Play, Clock } from 'lucide-react';
+import { RefreshCw, Loader2, CheckCircle, XCircle, Play, Clock, Zap, Database } from 'lucide-react';
 import type { DifyApp, SyncResult } from '../types';
 
 interface SyncStatus {
@@ -14,6 +14,9 @@ interface SyncStatus {
   synced_workflow_runs: number;
   synced_node_executions: number;
   failed_details: number;
+  new_conversations?: number;
+  updated_conversations?: number;
+  skipped_conversations?: number;
   error_message?: string;
   last_synced_at?: number;
 }
@@ -24,6 +27,7 @@ export function SyncPage() {
   const [syncStatuses, setSyncStatuses] = useState<Map<string, SyncStatus>>(new Map());
   const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [syncMode, setSyncMode] = useState<'incremental' | 'full'>('incremental');
 
   useEffect(() => {
     loadApps();
@@ -84,7 +88,10 @@ export function SyncPage() {
       });
 
       try {
-        const result = await invoke<SyncResult>('sync_app_data', { appId });
+        const result = await invoke<SyncResult>('sync_app_data', {
+          appId,
+          incremental: syncMode === 'incremental',
+        });
         setSyncStatuses((prev) => {
           const next = new Map(prev);
           next.set(appId, {
@@ -97,6 +104,9 @@ export function SyncPage() {
             synced_workflow_runs: result.synced_workflow_runs,
             synced_node_executions: result.synced_node_executions,
             failed_details: result.failed_details,
+            new_conversations: result.new_conversations,
+            updated_conversations: result.updated_conversations,
+            skipped_conversations: result.skipped_conversations,
             last_synced_at: Date.now(),
           } as SyncStatus);
           return next;
@@ -139,23 +149,61 @@ export function SyncPage() {
           </h2>
           <p className="text-gray-500 mt-1">选择应用并同步对话记录到本地</p>
         </div>
-        <button
-          onClick={handleSync}
-          disabled={syncing || selectedApps.size === 0}
-          className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          {syncing ? (
-            <>
-              <Loader2 size={16} className="animate-spin" />
-              同步中...
-            </>
-          ) : (
-            <>
-              <Play size={16} />
-              开始同步 ({selectedApps.size} 个应用)
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Sync Mode Toggle */}
+          <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+            <button
+              onClick={() => setSyncMode('incremental')}
+              disabled={syncing}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 ${
+                syncMode === 'incremental'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Zap size={12} />
+              增量同步
+            </button>
+            <button
+              onClick={() => setSyncMode('full')}
+              disabled={syncing}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 ${
+                syncMode === 'full'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Database size={12} />
+              全量同步
+            </button>
+          </div>
+          <button
+            onClick={handleSync}
+            disabled={syncing || selectedApps.size === 0}
+            className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {syncing ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                同步中...
+              </>
+            ) : (
+              <>
+                <Play size={16} />
+                {syncMode === 'incremental' ? '增量同步' : '全量同步'} ({selectedApps.size} 个应用)
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Sync Mode Description */}
+      <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-lg">
+        <p className="text-xs text-blue-700">
+          {syncMode === 'incremental'
+            ? '💡 增量同步模式：仅获取上次同步后有变化的对话（新增/更新），跳过未变化的对话，速度更快。'
+            : '🔄 全量同步模式：重新获取所有对话和消息，确保数据完整，但耗时较长。'}
+        </p>
       </div>
 
       {loading ? (
@@ -233,6 +281,24 @@ export function SyncPage() {
                               <span className="text-blue-500">同步中，请稍候...</span>
                             )}
                           </div>
+                          {/* Incremental sync stats (only meaningful when skipped > 0) */}
+                          {status.skipped_conversations !== undefined && status.skipped_conversations > 0 && (
+                            <div className="flex items-center gap-3 text-xs mt-1.5">
+                              {status.new_conversations !== undefined && status.new_conversations > 0 && (
+                                <span className="text-green-600">
+                                  ✨ 新增: {status.new_conversations}
+                                </span>
+                              )}
+                              {status.updated_conversations !== undefined && status.updated_conversations > 0 && (
+                                <span className="text-blue-600">
+                                  🔄 更新: {status.updated_conversations}
+                                </span>
+                              )}
+                              <span className="text-gray-400">
+                                ⏭️ 跳过: {status.skipped_conversations}
+                              </span>
+                            </div>
+                          )}
                           {status.error_message && (
                             <p className="text-xs text-red-500 mt-1">
                               {status.error_message}

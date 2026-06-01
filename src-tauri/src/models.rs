@@ -362,6 +362,12 @@ pub struct SyncResult {
     pub synced_workflow_runs: i64,
     pub synced_node_executions: i64,
     pub failed_details: i64,
+    #[serde(default)]
+    pub new_conversations: i64,
+    #[serde(default)]
+    pub updated_conversations: i64,
+    #[serde(default)]
+    pub skipped_conversations: i64,
 }
 
 // ===== Dashboard Stats =====

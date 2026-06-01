@@ -318,6 +318,26 @@ impl Database {
         Ok(())
     }
 
+    // ===== Incremental Sync Helpers =====
+    pub fn get_conversations_updated_at(&self, app_id: &str, conversation_ids: &[String]) -> Result<std::collections::HashMap<String, i64>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut result = std::collections::HashMap::new();
+        for cid in conversation_ids {
+            let key = format!("{}:{}", app_id, cid);
+            let updated: Option<i64> = conn
+                .query_row(
+                    "SELECT updated_at FROM conversations WHERE id = ?1",
+                    params![key],
+                    |row| row.get(0),
+                )
+                .ok();
+            if let Some(ts) = updated {
+                result.insert(cid.clone(), ts);
+            }
+        }
+        Ok(result)
+    }
+
     // ===== Conversations =====
     pub fn upsert_conversation(&self, app_id: &str, conv: &DifyConversationItem) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;

@@ -119,6 +119,9 @@ export interface SyncResult {
   synced_workflow_runs: number;
   synced_node_executions: number;
   failed_details: number;
+  new_conversations?: number;
+  updated_conversations?: number;
+  skipped_conversations?: number;
 }
 
 // ===== Dashboard Stats =====

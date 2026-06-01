@@ -82,9 +82,12 @@ fn delete_app_data(state: State<AppState>, app_id: String) -> Result<(), String>
 async fn sync_app_data(
     state: State<'_, AppState>,
     app_id: String,
+    incremental: Option<bool>,
 ) -> Result<SyncResult, String> {
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
+
+    let is_incremental = incremental.unwrap_or(false);
 
     let mut total_conversations: i64 = 0;
     let mut synced_conversations: i64 = 0;
@@ -93,14 +96,45 @@ async fn sync_app_data(
     let mut synced_workflow_runs: i64 = 0;
     let mut synced_node_executions: i64 = 0;
     let mut failed_details: i64 = 0;
+    let mut new_conversations: i64 = 0;
+    let mut updated_conversations: i64 = 0;
+    let mut skipped_conversations: i64 = 0;
     let mut fetched_workflow_runs: HashSet<String> = HashSet::new();
     let mut page: i64 = 1;
 
     loop {
         let conv_resp = client.fetch_conversations(&app_id, 100, page).await?;
-        total_conversations += conv_resp.data.len() as i64;
+
+        // In incremental mode, check which conversations have changed
+        let local_updated_map = if is_incremental && !conv_resp.data.is_empty() {
+            let ids: Vec<String> = conv_resp.data.iter().map(|c| c.id.clone()).collect();
+            state.db.get_conversations_updated_at(&app_id, &ids)?
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        let mut page_skipped = 0;
 
         for conv in &conv_resp.data {
+            // In incremental mode, check if conversation has changed
+            if is_incremental {
+                if let Some(local_updated) = local_updated_map.get(&conv.id) {
+                    if *local_updated == conv.updated_at {
+                        // Conversation hasn't changed, skip
+                        skipped_conversations += 1;
+                        page_skipped += 1;
+                        continue;
+                    } else {
+                        // Conversation has been updated
+                        updated_conversations += 1;
+                    }
+                } else {
+                    // New conversation
+                    new_conversations += 1;
+                }
+            }
+
+            total_conversations += 1;
             state.db.upsert_conversation(&app_id, conv)?;
             synced_conversations += 1;
 
@@ -150,6 +184,11 @@ async fn sync_app_data(
             }
         }
 
+        // In incremental mode, if entire page was skipped, stop paginating
+        if is_incremental && !conv_resp.data.is_empty() && page_skipped == conv_resp.data.len() {
+            break;
+        }
+
         if conv_resp.has_more {
             page += 1;
         } else {
@@ -165,6 +204,9 @@ async fn sync_app_data(
         synced_workflow_runs,
         synced_node_executions,
         failed_details,
+        new_conversations,
+        updated_conversations,
+        skipped_conversations,
     })
 }
 
