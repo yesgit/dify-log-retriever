@@ -1219,6 +1219,8 @@ impl Database {
         // Build WHERE clauses
         // Note: app_id comes from DB-sourced dropdown values, timestamps are i64 - safe from injection
         let msg_where = build_where(app_id, start_time, end_time);
+        // Query-only WHERE: only messages with non-empty query (user questions)
+        let msg_where_q = format!("query != '' AND {}", msg_where);
         let conv_where = build_conv_where(app_id, start_time, end_time);
 
         // ── Basic counts ──
@@ -1234,15 +1236,9 @@ impl Database {
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
 
+        // Messages = user messages with non-empty query (user questions only)
         let total_messages: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM messages WHERE {}", msg_where),
-            [],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-
-        // Queries = messages with non-empty query
-        let total_queries: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM messages WHERE query != '' AND {}", msg_where),
+            &format!("SELECT COUNT(*) FROM messages WHERE {}", msg_where_q),
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
@@ -1259,12 +1255,12 @@ impl Database {
 
         // ── Token totals ──
         let total_answer_tokens: i64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(answer_tokens), 0) FROM messages WHERE {}", msg_where),
+            &format!("SELECT COALESCE(SUM(answer_tokens), 0) FROM messages WHERE {}", msg_where_q),
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let total_prompt_tokens: i64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(prompt_tokens), 0) FROM messages WHERE {}", msg_where),
+            &format!("SELECT COALESCE(SUM(prompt_tokens), 0) FROM messages WHERE {}", msg_where_q),
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
@@ -1279,7 +1275,7 @@ impl Database {
         } else {
             // No time filter: compute from actual data span
             let span: (i64, i64) = conn.query_row(
-                &format!("SELECT COALESCE(MIN(created_at), 0), COALESCE(MAX(created_at), 0) FROM messages WHERE {}", msg_where),
+                &format!("SELECT COALESCE(MIN(created_at), 0), COALESCE(MAX(created_at), 0) FROM messages WHERE {}", msg_where_q),
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             ).unwrap_or((0, 0));
@@ -1292,23 +1288,23 @@ impl Database {
         let daily_avg_tokens = total_tokens as f64 / days_in_range;
 
         // ── Averages ──
-        let avg_queries_per_conversation = if total_conversations > 0 { total_queries as f64 / total_conversations as f64 } else { 0.0 };
+        let avg_messages_per_conversation = if total_conversations > 0 { total_messages as f64 / total_conversations as f64 } else { 0.0 };
         let avg_conversations_per_user = if total_users > 0 { total_conversations as f64 / total_users as f64 } else { 0.0 };
-        let avg_queries_per_user = if total_users > 0 { total_queries as f64 / total_users as f64 } else { 0.0 };
+        let avg_messages_per_user = if total_users > 0 { total_messages as f64 / total_users as f64 } else { 0.0 };
 
         // ── Feedback counts ──
         let feedback_like: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM messages WHERE feedback = 'like' AND {}", msg_where),
+            &format!("SELECT COUNT(*) FROM messages WHERE feedback = 'like' AND {}", msg_where_q),
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let feedback_dislike: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM messages WHERE feedback = 'dislike' AND {}", msg_where),
+            &format!("SELECT COUNT(*) FROM messages WHERE feedback = 'dislike' AND {}", msg_where_q),
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let feedback_none: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM messages WHERE feedback IS NULL AND {}", msg_where),
+            &format!("SELECT COUNT(*) FROM messages WHERE feedback IS NULL AND {}", msg_where_q),
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
@@ -1323,7 +1319,7 @@ impl Database {
                         (json_extract(value, '$.rating') IS NOT NULL AND json_extract(value, '$.rating') != '')
                         OR (json_extract(value, '$.content') IS NOT NULL AND json_extract(value, '$.content') != '')
                 ) AND {}",
-                msg_where
+                msg_where_q
             ),
             [],
             |row| row.get(0),
@@ -1331,11 +1327,11 @@ impl Database {
 
         let avg_feedback_per_user = if total_users > 0 { feedback_total as f64 / total_users as f64 } else { 0.0 };
         let avg_feedback_per_conversation = if total_conversations > 0 { feedback_total as f64 / total_conversations as f64 } else { 0.0 };
-        let avg_feedback_per_query = if total_queries > 0 { feedback_total as f64 / total_queries as f64 } else { 0.0 };
+        let avg_feedback_per_message = if total_messages > 0 { feedback_total as f64 / total_messages as f64 } else { 0.0 };
 
         // ── Error stats ──
         let error_count: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM messages WHERE ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') AND {}", msg_where),
+            &format!("SELECT COUNT(*) FROM messages WHERE ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') AND {}", msg_where_q),
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
@@ -1345,25 +1341,25 @@ impl Database {
         // TTFT (provider_response_latency)
         let ttft_distribution = compute_distribution(
             &conn,
-            &format!("SELECT provider_response_latency FROM messages WHERE provider_response_latency > 0 AND {}", msg_where),
+            &format!("SELECT provider_response_latency FROM messages WHERE provider_response_latency > 0 AND {}", msg_where_q),
         )?;
 
         // Elapsed time
         let elapsed_time_distribution = compute_distribution(
             &conn,
-            &format!("SELECT elapsed_time FROM messages WHERE elapsed_time > 0 AND {}", msg_where),
+            &format!("SELECT elapsed_time FROM messages WHERE elapsed_time > 0 AND {}", msg_where_q),
         )?;
 
         // Tokens per message
         let token_per_message_distribution = compute_distribution(
             &conn,
-            &format!("SELECT (answer_tokens + prompt_tokens) FROM messages WHERE (answer_tokens + prompt_tokens) > 0 AND {}", msg_where),
+            &format!("SELECT (answer_tokens + prompt_tokens) FROM messages WHERE (answer_tokens + prompt_tokens) > 0 AND {}", msg_where_q),
         )?;
 
         // Token speed (tokens/s) = answer_tokens / elapsed_time
         let token_speed_distribution = compute_distribution(
             &conn,
-            &format!("SELECT CAST(answer_tokens AS REAL) / elapsed_time FROM messages WHERE elapsed_time > 0 AND answer_tokens > 0 AND {}", msg_where),
+            &format!("SELECT CAST(answer_tokens AS REAL) / elapsed_time FROM messages WHERE elapsed_time > 0 AND answer_tokens > 0 AND {}", msg_where_q),
         )?;
 
         // User feedback count distribution
@@ -1401,14 +1397,14 @@ impl Database {
             &conn,
             &format!(
                 "SELECT CAST(json_array_length(feedbacks) AS REAL) FROM messages WHERE feedback IS NOT NULL AND json_array_length(feedbacks) >= 0 AND {}",
-                msg_where
+                msg_where_q
             ),
         )?;
 
         // ── Feedback label stats ──
         let feedback_label_sql = format!(
             "SELECT COALESCE(feedback, 'none') as fb_label, COUNT(*) as cnt FROM messages WHERE {} GROUP BY fb_label ORDER BY cnt DESC",
-            msg_where
+            msg_where_q
         );
         let mut stmt = conn.prepare(&feedback_label_sql).map_err(|e| e.to_string())?;
         let feedback_label_stats: Vec<FeedbackLabelStat> = stmt.query_map([], |row| {
@@ -1447,7 +1443,8 @@ impl Database {
         // ── Daily trend ──
         let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
 
-        // For daily users, join messages with conversations
+        // For daily users, join messages with conversations (only query messages)
+        let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
         let daily_users_sql = format!(
             "SELECT date(m.created_at, 'unixepoch', 'localtime') as day,
                     COUNT(DISTINCT c.from_end_user_id) as user_count
@@ -1455,7 +1452,7 @@ impl Database {
              INNER JOIN conversations c ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id
              WHERE {} AND c.from_end_user_id IS NOT NULL AND c.from_end_user_id != ''
              GROUP BY day",
-            msg_where_m
+            msg_where_m_q
         );
         // Build a map of date -> user count
         let mut daily_users_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
@@ -1473,13 +1470,12 @@ impl Database {
             "SELECT date(created_at, 'unixepoch', 'localtime') as day,
              COUNT(DISTINCT conversation_id) as conv_count,
              COUNT(*) as msg_count,
-             COALESCE(SUM(answer_tokens + prompt_tokens), 0) as token_sum,
-             SUM(CASE WHEN query != '' THEN 1 ELSE 0 END) as query_count
+             COALESCE(SUM(answer_tokens + prompt_tokens), 0) as token_sum
              FROM messages
             WHERE {}
             GROUP BY day
             ORDER BY day ASC",
-            msg_where
+            msg_where_q
         );
         let mut stmt = conn.prepare(&daily_sql).map_err(|e| e.to_string())?;
         let recent_daily: Vec<DailyStats> = stmt.query_map([], |row| {
@@ -1490,7 +1486,6 @@ impl Database {
                 conversations: row.get(1)?,
                 messages: row.get(2)?,
                 tokens: row.get(3)?,
-                queries: row.get(4)?,
                 users,
             })
         }).map_err(|e| e.to_string())?
@@ -1502,14 +1497,13 @@ impl Database {
             total_users,
             total_conversations,
             total_messages,
-            total_queries,
             total_answer_tokens,
             total_prompt_tokens,
             total_tokens,
             daily_avg_tokens,
-            avg_queries_per_conversation,
+            avg_messages_per_conversation,
             avg_conversations_per_user,
-            avg_queries_per_user,
+            avg_messages_per_user,
             feedback_total,
             feedback_like,
             feedback_dislike,
@@ -1518,7 +1512,7 @@ impl Database {
             feedback_like_rate,
             avg_feedback_per_user,
             avg_feedback_per_conversation,
-            avg_feedback_per_query,
+            avg_feedback_per_message,
             error_count,
             error_rate,
             ttft_distribution,

@@ -143,16 +143,15 @@ export interface DashboardStats {
   total_users: number;
   total_conversations: number;
   total_messages: number;
-  total_queries: number;
   // Token totals
   total_answer_tokens: number;
   total_prompt_tokens: number;
   total_tokens: number;
   daily_avg_tokens: number;
   // Averages
-  avg_queries_per_conversation: number;
+  avg_messages_per_conversation: number;
   avg_conversations_per_user: number;
-  avg_queries_per_user: number;
+  avg_messages_per_user: number;
   // Feedback counts
   feedback_total: number;
   feedback_like: number;
@@ -162,7 +161,7 @@ export interface DashboardStats {
   feedback_like_rate: number;
   avg_feedback_per_user: number;
   avg_feedback_per_conversation: number;
-  avg_feedback_per_query: number;
+  avg_feedback_per_message: number;
   // Error stats
   error_count: number;
   error_rate: number;
@@ -193,7 +192,6 @@ export interface DailyStats {
   conversations: number;
   messages: number;
   tokens: number;
-  queries: number;
   users: number;
 }
 

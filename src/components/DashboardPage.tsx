@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   BarChart3, MessageSquare, Users, Zap, ThumbsUp, ThumbsDown, Minus,
-  AlertTriangle, Clock, Hash, Activity, Filter, Info
+  AlertTriangle, Clock, Activity, Filter, Info
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
@@ -199,15 +199,13 @@ export function DashboardPage() {
       ) : (
         <>
           {/* Basic Count Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <StatCard icon={<Users size={18} className="text-blue-500" />} label="用户数" value={stats.total_users}
               tooltip="独立终端用户数（基于 from_end_user_id 去重统计）" />
             <StatCard icon={<MessageSquare size={18} className="text-green-500" />} label="会话数" value={stats.total_conversations}
               tooltip="会话（Conversation）总数，每个会话包含多条消息" />
-            <StatCard icon={<Hash size={18} className="text-purple-500" />} label="问答数" value={stats.total_queries}
-              tooltip="有效问答对数，即 query 非空的消息数" />
             <StatCard icon={<Activity size={18} className="text-cyan-500" />} label="消息数" value={stats.total_messages}
-              tooltip="消息总数，包括用户发送的消息和 AI 回复" />
+              tooltip="用户提问消息数量，即 query 非空的消息数" />
             <StatCard icon={<Zap size={18} className="text-orange-500" />} label="应用数" value={stats.total_apps}
               tooltip="筛选范围内的应用数量" />
           </div>
@@ -215,12 +213,12 @@ export function DashboardPage() {
           {/* Average Metrics */}
           <Section title="平均指标">
             <div className="grid grid-cols-3 gap-4">
-              <AvgCard label="会话平均问答数" value={stats.avg_queries_per_conversation} decimals={1}
-                tooltip="平均每个会话包含的问答数 = 问答数 / 会话数" />
+              <AvgCard label="会话平均消息数" value={stats.avg_messages_per_conversation} decimals={1}
+                tooltip="平均每个会话包含的用户提问消息数 = 消息数 / 会话数" />
               <AvgCard label="用户平均会话数" value={stats.avg_conversations_per_user} decimals={1}
                 tooltip="平均每个用户发起的会话数 = 会话数 / 用户数" />
-              <AvgCard label="用户平均问答数" value={stats.avg_queries_per_user} decimals={1}
-                tooltip="平均每个用户的问答数 = 问答数 / 用户数" />
+              <AvgCard label="用户平均消息数" value={stats.avg_messages_per_user} decimals={1}
+                tooltip="平均每个用户的提问消息数 = 消息数 / 用户数" />
             </div>
           </Section>
 
@@ -245,8 +243,8 @@ export function DashboardPage() {
                 tooltip="平均每个用户提交的反馈数 = 反馈总数 / 用户数" />
               <SmallStat label="会话平均反馈数" value={stats.avg_feedback_per_conversation.toFixed(2)}
                 tooltip="平均每个会话的反馈数 = 反馈总数 / 会话数" />
-              <SmallStat label="问答平均反馈数" value={stats.avg_feedback_per_query.toFixed(2)}
-                tooltip="平均每个问答的反馈数 = 反馈总数 / 问答数" />
+              <SmallStat label="消息平均反馈数" value={stats.avg_feedback_per_message.toFixed(2)}
+                tooltip="平均每条消息的反馈数 = 反馈总数 / 消息数" />
             </div>
 
             {/* Feedback label stats */}
@@ -386,7 +384,7 @@ export function DashboardPage() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-900 truncate">{app.app_name}</p>
                       <p className="text-xs text-gray-400">
-                        {app.conversation_count} 会话 · {app.message_count} 问答
+                        {app.conversation_count} 会话 · {app.message_count} 消息
                       </p>
                     </div>
                   </div>
@@ -556,7 +554,7 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
     <div className="space-y-6">
       {/* Conversations & Queries */}
       <div>
-        <h4 className="text-sm font-medium text-gray-700 mb-3">每日会话数 & 问答数</h4>
+        <h4 className="text-sm font-medium text-gray-700 mb-3">每日会话数 & 消息数</h4>
         <ResponsiveContainer width="100%" height={240}>
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -568,7 +566,7 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             <Line type="monotone" dataKey="conversations" name="会话数" stroke="#3b82f6" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="queries" name="问答数" stroke="#22c55e" strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="messages" name="消息数" stroke="#22c55e" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>

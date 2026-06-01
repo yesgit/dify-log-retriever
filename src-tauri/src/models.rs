@@ -404,16 +404,15 @@ pub struct DashboardStats {
     pub total_users: i64,
     pub total_conversations: i64,
     pub total_messages: i64,
-    pub total_queries: i64,
     // Token totals
     pub total_answer_tokens: i64,
     pub total_prompt_tokens: i64,
     pub total_tokens: i64,
     pub daily_avg_tokens: f64,
     // Averages
-    pub avg_queries_per_conversation: f64,
+    pub avg_messages_per_conversation: f64,
     pub avg_conversations_per_user: f64,
-    pub avg_queries_per_user: f64,
+    pub avg_messages_per_user: f64,
     // Feedback counts
     pub feedback_total: i64,
     pub feedback_like: i64,
@@ -423,7 +422,7 @@ pub struct DashboardStats {
     pub feedback_like_rate: f64,
     pub avg_feedback_per_user: f64,
     pub avg_feedback_per_conversation: f64,
-    pub avg_feedback_per_query: f64,
+    pub avg_feedback_per_message: f64,
     // Error stats
     pub error_count: i64,
     pub error_rate: f64,
@@ -457,8 +456,6 @@ pub struct DailyStats {
     pub messages: i64,
     #[serde(default)]
     pub tokens: i64,
-    #[serde(default)]
-    pub queries: i64,
     #[serde(default)]
     pub users: i64,
 }
