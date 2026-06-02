@@ -237,8 +237,8 @@ async fn sync_workflow_app(
     app_id: &str,
     is_incremental: bool,
 ) -> Result<SyncResult, String> {
-    let total_conversations: i64 = 0;
-    let synced_conversations: i64 = 0;
+    let mut total_conversations: i64 = 0;
+    let mut synced_conversations: i64 = 0;
     let mut total_messages: i64 = 0;
     let mut synced_messages: i64 = 0;
     let mut synced_workflow_runs: i64 = 0;
@@ -284,6 +284,78 @@ async fn sync_workflow_app(
             }
 
             state.db.upsert_workflow_app_log(app_id, log_item)?;
+
+            // Create conversation record so workflow data shows in conversation list UI
+            let run_id_for_name = &log_item.workflow_run.id;
+            let display_name = if !run_id_for_name.is_empty() {
+                let truncated: String = run_id_for_name.chars().take(8).collect();
+                if run_id_for_name.chars().count() > 8 {
+                    format!("Workflow: {}...", truncated)
+                } else {
+                    format!("Workflow: {}", truncated)
+                }
+            } else {
+                "Workflow Run".to_string()
+            };
+
+            let conv = DifyConversationItem {
+                id: log_item.id.clone(),
+                name: display_name,
+                summary: format!("Status: {}", log_item.workflow_run.status),
+                inputs: serde_json::Value::Null,
+                status: log_item.workflow_run.status.clone(),
+                introduction: String::new(),
+                from_source: log_item.created_from.clone(),
+                from_end_user_id: log_item.created_by_end_user.as_ref().map(|u| u.id.clone()).unwrap_or_default(),
+                from_end_user_session_id: log_item.created_by_end_user.as_ref().map(|u| u.session_id.clone()).unwrap_or_default(),
+                read_at: None,
+                annotated: false,
+                model_config: serde_json::Value::Null,
+                user_feedback_stats: serde_json::Value::Null,
+                admin_feedback_stats: serde_json::Value::Null,
+                status_count: serde_json::Value::Null,
+                created_at: log_item.created_at,
+                updated_at: if log_item.workflow_run.finished_at > 0 { log_item.workflow_run.finished_at } else { log_item.created_at },
+                raw_json: serde_json::Value::Null,
+            };
+            state.db.upsert_conversation(app_id, &conv)?;
+            total_conversations += 1;
+            synced_conversations += 1;
+
+            // Create message record so workflow run details appear in message detail UI
+            let workflow_run_id = if log_item.workflow_run.id.is_empty() { None } else { Some(log_item.workflow_run.id.clone()) };
+            let msg = DifyMessageItem {
+                id: log_item.id.clone(),
+                conversation_id: log_item.id.clone(),
+                inputs: serde_json::Value::Null,
+                query: String::from("Workflow Execution"),
+                message: String::new(),
+                answer: format!("Status: {}, Tokens: {}, Time: {:.2}s, Steps: {}",
+                    log_item.workflow_run.status,
+                    log_item.workflow_run.total_tokens,
+                    log_item.workflow_run.elapsed_time,
+                    log_item.workflow_run.total_steps),
+                feedback: None,
+                feedbacks: serde_json::Value::Null,
+                retriever_resources: serde_json::Value::Null,
+                message_metadata: serde_json::Value::Null,
+                agent_thoughts: serde_json::Value::Null,
+                message_files: serde_json::Value::Null,
+                annotation: serde_json::Value::Null,
+                annotation_hit_history: serde_json::Value::Null,
+                status: log_item.workflow_run.status.clone(),
+                error: log_item.workflow_run.error.clone().unwrap_or(serde_json::Value::Null),
+                parent_message_id: String::new(),
+                workflow_run_id,
+                answer_tokens: log_item.workflow_run.total_tokens,
+                prompt_tokens: 0,
+                message_tokens: 0,
+                provider_response_latency: 0.0,
+                elapsed_time: log_item.workflow_run.elapsed_time,
+                created_at: log_item.created_at,
+                raw_json: serde_json::Value::Null,
+            };
+            state.db.upsert_message(app_id, &log_item.id, &msg)?;
             synced_messages += 1;
 
             let run_id = &log_item.workflow_run.id;
