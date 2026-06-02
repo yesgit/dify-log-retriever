@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use rust_xlsxwriter::*;
 use serde_json::json;
 
-use crate::models::{FeedbackMessage, MessageDetail, NodeEvalRecord};
+use crate::models::{DashboardStats, FeedbackMessage, MessageDetail, NodeEvalRecord, StatDistribution};
 
 pub fn export_to_json(messages: &[MessageDetail], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
     let data: Vec<serde_json::Value> = messages
@@ -575,6 +575,231 @@ pub fn export_node_eval_to_file(
     );
 
     save_export_file_with_dialog(&content, &default_filename, "jsonl")
+}
+
+// ===== Dashboard Export Functions =====
+
+pub fn export_dashboard_to_excel(stats: &DashboardStats, app_name: &str) -> Result<String, String> {
+    let mut workbook = Workbook::new();
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0x4472C4))
+        .set_font_color(Color::White)
+        .set_border(FormatBorder::Thin)
+        .set_text_wrap();
+
+    let label_format = Format::new()
+        .set_bold()
+        .set_border(FormatBorder::Thin)
+        .set_background_color(Color::RGB(0xF2F2F2));
+
+    let value_format = Format::new()
+        .set_border(FormatBorder::Thin);
+
+    let percent_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_num_format("0.0%");
+
+    let number_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_num_format("#,##0");
+
+    // ===== Sheet 1: Overview =====
+    let overview = workbook.add_worksheet().set_name("概览").map_err(|e| e.to_string())?;
+    overview.set_column_width(0, 30.0).map_err(|e| e.to_string())?;
+    overview.set_column_width(1, 20.0).map_err(|e| e.to_string())?;
+
+    // Title
+    overview.merge_range(0, 0, 0, 1, "数据看板概览", &header_format).map_err(|e| e.to_string())?;
+    overview.write_string_with_format(1, 0, "筛选应用", &label_format).map_err(|e| e.to_string())?;
+    overview.write_string_with_format(1, 1, if app_name.is_empty() { "全部应用" } else { app_name }, &value_format).map_err(|e| e.to_string())?;
+    overview.write_string_with_format(2, 0, "导出时间", &label_format).map_err(|e| e.to_string())?;
+    overview.write_string_with_format(2, 1, &chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), &value_format).map_err(|e| e.to_string())?;
+
+    // Basic metrics
+    let mut row = 4u32;
+    let basic_metrics: [(&str, i64); 4] = [
+        ("活跃用户数", stats.total_users),
+        ("全部会话数", stats.total_conversations),
+        ("全部消息数", stats.total_messages),
+        ("应用数", stats.total_apps),
+    ];
+    overview.write_string_with_format(row, 0, "基本指标", &header_format).map_err(|e| e.to_string())?;
+    overview.write_blank(row, 1, &header_format).map_err(|e| e.to_string())?;
+    row += 1;
+    for (label, value) in &basic_metrics {
+        overview.write_string_with_format(row, 0, *label, &label_format).map_err(|e| e.to_string())?;
+        overview.write_number_with_format(row, 1, *value as f64, &number_format).map_err(|e| e.to_string())?;
+        row += 1;
+    }
+
+    // Key ratios
+    row += 1;
+    overview.write_string_with_format(row, 0, "关键指标", &header_format).map_err(|e| e.to_string())?;
+    overview.write_blank(row, 1, &header_format).map_err(|e| e.to_string())?;
+    row += 1;
+    let ratio_metrics: [(&str, f64); 4] = [
+        ("平均会话互动数", stats.avg_conversation_interactions),
+        ("用户满意度 (‰)", stats.satisfaction_rate),
+        ("好评率 (%)", stats.feedback_like_rate * 100.0),
+        ("异常率 (%)", stats.error_rate * 100.0),
+    ];
+    for (label, value) in &ratio_metrics {
+        overview.write_string_with_format(row, 0, *label, &label_format).map_err(|e| e.to_string())?;
+        overview.write_number_with_format(row, 1, *value, &Format::new().set_border(FormatBorder::Thin).set_num_format("0.0")).map_err(|e| e.to_string())?;
+        row += 1;
+    }
+
+    // Token stats
+    row += 1;
+    overview.write_string_with_format(row, 0, "Token 消耗", &header_format).map_err(|e| e.to_string())?;
+    overview.write_blank(row, 1, &header_format).map_err(|e| e.to_string())?;
+    row += 1;
+    let token_metrics: [(&str, i64); 3] = [
+        ("Prompt Tokens", stats.total_prompt_tokens),
+        ("Answer Tokens", stats.total_answer_tokens),
+        ("总 Token 量", stats.total_tokens),
+    ];
+    for (label, value) in &token_metrics {
+        overview.write_string_with_format(row, 0, *label, &label_format).map_err(|e| e.to_string())?;
+        overview.write_number_with_format(row, 1, *value as f64, &number_format).map_err(|e| e.to_string())?;
+        row += 1;
+    }
+    overview.write_string_with_format(row, 0, "日均 Token 消耗", &label_format).map_err(|e| e.to_string())?;
+    overview.write_number_with_format(row, 1, stats.daily_avg_tokens, &number_format).map_err(|e| e.to_string())?;
+
+    // Feedback stats
+    row += 2;
+    overview.write_string_with_format(row, 0, "反馈统计", &header_format).map_err(|e| e.to_string())?;
+    overview.write_blank(row, 1, &header_format).map_err(|e| e.to_string())?;
+    row += 1;
+    let feedback_metrics: [(&str, i64); 5] = [
+        ("赞数", stats.feedback_like),
+        ("踩数", stats.feedback_dislike),
+        ("无反馈", stats.feedback_none),
+        ("反馈总数", stats.feedback_total),
+        ("有内容反馈数", stats.feedback_with_content),
+    ];
+    for (label, value) in &feedback_metrics {
+        overview.write_string_with_format(row, 0, *label, &label_format).map_err(|e| e.to_string())?;
+        overview.write_number_with_format(row, 1, *value as f64, &number_format).map_err(|e| e.to_string())?;
+        row += 1;
+    }
+
+    // Error stats
+    row += 1;
+    overview.write_string_with_format(row, 0, "异常统计", &header_format).map_err(|e| e.to_string())?;
+    overview.write_blank(row, 1, &header_format).map_err(|e| e.to_string())?;
+    row += 1;
+    overview.write_string_with_format(row, 0, "异常消息数", &label_format).map_err(|e| e.to_string())?;
+    overview.write_number_with_format(row, 1, stats.error_count as f64, &number_format).map_err(|e| e.to_string())?;
+    row += 1;
+    overview.write_string_with_format(row, 0, "异常率", &label_format).map_err(|e| e.to_string())?;
+    overview.write_number_with_format(row, 1, stats.error_rate, &percent_format).map_err(|e| e.to_string())?;
+
+    overview.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+
+    // ===== Sheet 2: Distributions =====
+    let dist_sheet = workbook.add_worksheet().set_name("分布统计").map_err(|e| e.to_string())?;
+    for (col, width) in [(0, 22.0), (1, 12.0), (2, 12.0), (3, 12.0), (4, 12.0), (5, 12.0), (6, 12.0), (7, 12.0)] {
+        dist_sheet.set_column_width(col, width).map_err(|e| e.to_string())?;
+    }
+
+    let dist_headers = ["指标名称", "样本数", "最小值", "最大值", "平均值", "P50", "P80", "P95"];
+    for (col, h) in dist_headers.iter().enumerate() {
+        dist_sheet.write_string_with_format(0, col as u16, *h, &header_format).map_err(|e| e.to_string())?;
+    }
+
+    let distributions: [(&str, Option<&StatDistribution>); 10] = [
+        ("会话消息数分布", stats.messages_per_conversation_distribution.as_ref()),
+        ("用户会话数分布", stats.conversations_per_user_distribution.as_ref()),
+        ("用户消息数分布", stats.messages_per_user_distribution.as_ref()),
+        ("首 Token 时间 (TTFT)", stats.ttft_distribution.as_ref()),
+        ("总响应时间", stats.elapsed_time_distribution.as_ref()),
+        ("每条消息 Token 消耗", stats.token_per_message_distribution.as_ref()),
+        ("Token 生成速度", stats.token_speed_distribution.as_ref()),
+        ("用户反馈数分布", stats.user_feedback_count_distribution.as_ref()),
+        ("会话反馈数分布", stats.conversation_feedback_count_distribution.as_ref()),
+        ("消息反馈数分布", stats.message_feedback_count_distribution.as_ref()),
+    ];
+
+    let mut dist_row = 1u32;
+    for (name, dist_opt) in &distributions {
+        if let Some(dist) = dist_opt {
+            dist_sheet.write_string_with_format(dist_row, 0, *name, &label_format).map_err(|e| e.to_string())?;
+            dist_sheet.write_number_with_format(dist_row, 1, dist.count as f64, &number_format).map_err(|e| e.to_string())?;
+            dist_sheet.write_number_with_format(dist_row, 2, dist.min, &value_format).map_err(|e| e.to_string())?;
+            dist_sheet.write_number_with_format(dist_row, 3, dist.max, &value_format).map_err(|e| e.to_string())?;
+            dist_sheet.write_number_with_format(dist_row, 4, dist.avg, &Format::new().set_border(FormatBorder::Thin).set_num_format("0.00")).map_err(|e| e.to_string())?;
+            dist_sheet.write_number_with_format(dist_row, 5, dist.p50, &Format::new().set_border(FormatBorder::Thin).set_num_format("0.00")).map_err(|e| e.to_string())?;
+            dist_sheet.write_number_with_format(dist_row, 6, dist.p80, &Format::new().set_border(FormatBorder::Thin).set_num_format("0.00")).map_err(|e| e.to_string())?;
+            dist_sheet.write_number_with_format(dist_row, 7, dist.p95, &Format::new().set_border(FormatBorder::Thin).set_num_format("0.00")).map_err(|e| e.to_string())?;
+            dist_row += 1;
+        }
+    }
+    dist_sheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+
+    // ===== Sheet 3: Daily Trend =====
+    let daily_sheet = workbook.add_worksheet().set_name("每日趋势").map_err(|e| e.to_string())?;
+    let daily_headers = ["日期", "会话数", "消息数", "用户数", "输入 Token", "输出 Token", "异常数", "赞数", "踩数", "平均响应时间(s)", "平均 TTFT(s)", "Token 速度(t/s)"];
+    for (col, h) in daily_headers.iter().enumerate() {
+        daily_sheet.set_column_width(col as u16, 16.0).map_err(|e| e.to_string())?;
+        daily_sheet.write_string_with_format(0, col as u16, *h, &header_format).map_err(|e| e.to_string())?;
+    }
+
+    for (idx, day) in stats.recent_daily.iter().enumerate() {
+        let r = (idx + 1) as u32;
+        daily_sheet.write_string_with_format(r, 0, &day.date, &value_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 1, day.conversations as f64, &number_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 2, day.messages as f64, &number_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 3, day.users as f64, &number_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 4, day.total_prompt_tokens as f64, &number_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 5, day.total_answer_tokens as f64, &number_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 6, day.errors as f64, &number_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 7, day.likes as f64, &number_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 8, day.dislikes as f64, &number_format).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 9, day.avg_elapsed_time, &Format::new().set_border(FormatBorder::Thin).set_num_format("0.00")).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 10, day.avg_ttft, &Format::new().set_border(FormatBorder::Thin).set_num_format("0.00")).map_err(|e| e.to_string())?;
+        daily_sheet.write_number_with_format(r, 11, day.avg_token_speed, &Format::new().set_border(FormatBorder::Thin).set_num_format("0.00")).map_err(|e| e.to_string())?;
+    }
+
+    if !stats.recent_daily.is_empty() {
+        let last_row = stats.recent_daily.len() as u32;
+        let last_col = 11u16;
+        daily_sheet.autofilter(0, 0, last_row, last_col).map_err(|e| e.to_string())?;
+    }
+    daily_sheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+
+    // ===== Sheet 4: Top Apps =====
+    if !stats.top_apps.is_empty() {
+        let apps_sheet = workbook.add_worksheet().set_name("应用排名").map_err(|e| e.to_string())?;
+        apps_sheet.set_column_width(0, 8.0).map_err(|e| e.to_string())?;
+        apps_sheet.set_column_width(1, 30.0).map_err(|e| e.to_string())?;
+        apps_sheet.set_column_width(2, 15.0).map_err(|e| e.to_string())?;
+        apps_sheet.set_column_width(3, 15.0).map_err(|e| e.to_string())?;
+
+        let apps_headers = ["排名", "应用名称", "会话数", "消息数"];
+        for (col, h) in apps_headers.iter().enumerate() {
+            apps_sheet.write_string_with_format(0, col as u16, *h, &header_format).map_err(|e| e.to_string())?;
+        }
+
+        for (idx, app) in stats.top_apps.iter().enumerate() {
+            let r = (idx + 1) as u32;
+            apps_sheet.write_number_with_format(r, 0, (idx + 1) as f64, &value_format).map_err(|e| e.to_string())?;
+            apps_sheet.write_string_with_format(r, 1, &app.app_name, &value_format).map_err(|e| e.to_string())?;
+            apps_sheet.write_number_with_format(r, 2, app.conversation_count as f64, &number_format).map_err(|e| e.to_string())?;
+            apps_sheet.write_number_with_format(r, 3, app.message_count as f64, &number_format).map_err(|e| e.to_string())?;
+        }
+        apps_sheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+    }
+
+    // Save file
+    let default_filename = format!("dashboard_export_{}.xlsx", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let path = pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename));
+    workbook.save(&path).map_err(|e| format!("保存 Excel 失败: {}", e))?;
+
+    Ok(format!("已导出到: {}", path.display()))
 }
 
 pub fn export_feedback_to_json(messages: &[FeedbackMessage], save_path: Option<&std::path::Path>) -> Result<String, String> {

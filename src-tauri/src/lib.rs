@@ -546,6 +546,30 @@ async fn sync_all_apps(state: State<'_, AppState>, incremental: Option<bool>) ->
 }
 
 #[tauri::command]
+fn export_dashboard_excel(
+    state: State<AppState>,
+    app_id: Option<String>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+) -> Result<String, String> {
+    let stats = state.db.get_dashboard_stats(app_id.as_deref(), start_time, end_time)?;
+
+    // Resolve app name for the report header
+    let app_name = if let Some(ref aid) = app_id {
+        state.db.get_apps()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|a| a.id == *aid)
+            .map(|a| a.name)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    export::export_dashboard_to_excel(&stats, &app_name)
+}
+
+#[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -581,6 +605,7 @@ pub fn run() {
             get_auto_sync_settings,
             save_auto_sync_settings,
             sync_all_apps,
+            export_dashboard_excel,
             get_app_version,
         ])
         .run(tauri::generate_context!())

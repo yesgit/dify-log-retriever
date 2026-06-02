@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import html2canvas from 'html2canvas';
 import {
   BarChart3, MessageSquare, Users, Zap, ThumbsUp, ThumbsDown, Minus,
-  AlertTriangle, Clock, Activity, Filter, Info
+  AlertTriangle, Clock, Activity, Filter, Info, Download, Camera, Loader2
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
@@ -68,6 +69,11 @@ export function DashboardPage() {
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
   const [useCustom, setUseCustom] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
+  const [exportingScreenshot, setExportingScreenshot] = useState(false);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
+  const [exportMsgIsError, setExportMsgIsError] = useState(false);
+  const dashboardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { loadApps(); }, []);
 
@@ -78,23 +84,29 @@ export function DashboardPage() {
     } catch (e) { console.error(e); }
   };
 
+  /** Compute the current time range based on filter state */
+  const getTimeRange = useCallback((): { startTime: number | undefined; endTime: number | undefined } => {
+    let startTime: number | undefined;
+    let endTime: number | undefined;
+    if (useCustom) {
+      if (customStart) startTime = Math.floor(new Date(customStart).getTime() / 1000);
+      if (customEnd) {
+        const d = new Date(customEnd);
+        d.setHours(23, 59, 59);
+        endTime = Math.floor(d.getTime() / 1000);
+      }
+    } else {
+      const [s, e] = TIME_PRESETS[selectedPresetIdx].getRange();
+      startTime = s;
+      endTime = e;
+    }
+    return { startTime, endTime };
+  }, [useCustom, customStart, customEnd, selectedPresetIdx]);
+
   const loadStats = useCallback(async () => {
     setLoading(true);
     try {
-      let startTime: number | undefined;
-      let endTime: number | undefined;
-      if (useCustom) {
-        if (customStart) startTime = Math.floor(new Date(customStart).getTime() / 1000);
-        if (customEnd) {
-          const d = new Date(customEnd);
-          d.setHours(23, 59, 59);
-          endTime = Math.floor(d.getTime() / 1000);
-        }
-      } else {
-        const [s, e] = TIME_PRESETS[selectedPresetIdx].getRange();
-        startTime = s;
-        endTime = e;
-      }
+      const { startTime, endTime } = getTimeRange();
       const result = await invoke<DashboardStats>('get_dashboard_stats', {
         appId: selectedAppId || null,
         startTime,
@@ -102,9 +114,86 @@ export function DashboardPage() {
       });
       setStats(result);
     } catch (e) { console.error(e); } finally { setLoading(false); }
-  }, [selectedAppId, selectedPresetIdx, useCustom, customStart, customEnd]);
+  }, [selectedAppId, getTimeRange]);
 
   useEffect(() => { loadStats(); }, [loadStats]);
+
+  const handleExportExcel = async () => {
+    setExportingExcel(true);
+    setExportMsg(null);
+    try {
+      const { startTime, endTime } = getTimeRange();
+      const result = await invoke<string>('export_dashboard_excel', {
+        appId: selectedAppId || null,
+        startTime,
+        endTime,
+      });
+      setExportMsg(result);
+      setExportMsgIsError(false);
+    } catch (e: any) {
+      setExportMsg(`导出失败: ${e}`);
+      setExportMsgIsError(true);
+    } finally {
+      setExportingExcel(false);
+    }
+  };
+
+  const handleExportScreenshot = async () => {
+    if (!dashboardRef.current) return;
+    setExportingScreenshot(true);
+    setExportMsg(null);
+    try {
+      const canvas = await html2canvas(dashboardRef.current, {
+        backgroundColor: '#f9fafb',
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        windowWidth: dashboardRef.current.scrollWidth,
+        windowHeight: dashboardRef.current.scrollHeight,
+      });
+      const dataUrl = canvas.toDataURL('image/png');
+      const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
+      const binaryStr = atob(base64Data);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const filePath = await save({
+        defaultPath: `dashboard_screenshot_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.png`,
+        filters: [{ name: 'PNG Image', extensions: ['png'] }],
+      });
+      if (filePath) {
+        const { writeFile } = await import('@tauri-apps/plugin-fs');
+        await writeFile(filePath, bytes);
+        setExportMsg(`截图已保存到: ${filePath}`);
+        setExportMsgIsError(false);
+      }
+    } catch (outerError: any) {
+      // Fallback: download via browser <a> tag
+      try {
+        if (dashboardRef.current) {
+          const canvas = await html2canvas(dashboardRef.current, {
+            backgroundColor: '#f9fafb',
+            scale: 2,
+            useCORS: true,
+            logging: false,
+          });
+          const link = document.createElement('a');
+          link.download = `dashboard_screenshot_${Date.now()}.png`;
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+          setExportMsg('截图已下载');
+          setExportMsgIsError(false);
+        }
+      } catch (innerError: any) {
+        setExportMsg(`截图失败: ${innerError ?? outerError}`);
+        setExportMsgIsError(true);
+      }
+    } finally {
+      setExportingScreenshot(false);
+    }
+  };
 
   const formatPercent = (n: number) => `${n.toFixed(1)}%`;
 
@@ -136,12 +225,32 @@ export function DashboardPage() {
             </h2>
             <p className="text-gray-500 mt-1">数据统计概览</p>
           </div>
-          <button
-            onClick={loadStats}
-            className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-          >
-            刷新
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={loadStats}
+              className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            >
+              刷新
+            </button>
+            <button
+              onClick={handleExportExcel}
+              disabled={exportingExcel || !stats}
+              className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              title="导出 Excel 报表"
+            >
+              {exportingExcel ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+              <span className="hidden sm:inline">导出 Excel</span>
+            </button>
+            <button
+              onClick={handleExportScreenshot}
+              disabled={exportingScreenshot || !stats}
+              className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              title="导出长截图"
+            >
+              {exportingScreenshot ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+              <span className="hidden sm:inline">导出截图</span>
+            </button>
+          </div>
         </div>
 
         <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
@@ -194,10 +303,22 @@ export function DashboardPage() {
         </div>
       </div>
 
+      {/* Export message */}
+      {exportMsg && (
+        <div className={`mb-4 flex items-center gap-2 px-4 py-3 rounded-lg text-sm ${
+          exportMsgIsError
+            ? 'bg-red-50 text-red-700 border border-red-200'
+            : 'bg-green-50 text-green-700 border border-green-200'
+        }`}>
+          {exportMsg}
+          <button onClick={() => { setExportMsg(null); setExportMsgIsError(false); }} className="ml-auto text-current opacity-60 hover:opacity-100">✕</button>
+        </div>
+      )}
+
       {!stats ? (
         <div className="mt-10 text-center text-gray-500">暂无统计数据，请先同步数据</div>
       ) : (
-        <>
+        <div ref={dashboardRef}>
           {/* Basic Count Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <StatCard icon={<Users size={18} className="text-blue-500" />} label="活跃用户数" value={stats.total_users}
@@ -424,7 +545,7 @@ export function DashboardPage() {
               </div>
             </Section>
           )}
-        </>
+        </div>
       )}
     </div>
   );
