@@ -190,6 +190,7 @@ async fn sync_app_data(
     state: State<'_, AppState>,
     app_id: String,
     incremental: Option<bool>,
+    sync_workflow_details: Option<bool>,
 ) -> Result<SyncResult, String> {
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
@@ -223,10 +224,12 @@ async fn sync_app_data(
         }
     }?;
 
+    let fetch_wf = sync_workflow_details.unwrap_or(true);
+
     if app_mode == "workflow" {
-        sync_workflow_app(&state, &client, &app_id, incremental.unwrap_or(false)).await
+        sync_workflow_app(&state, &client, &app_id, incremental.unwrap_or(false), fetch_wf).await
     } else {
-        sync_chat_app(&state, &client, &app_id, incremental.unwrap_or(false)).await
+        sync_chat_app(&state, &client, &app_id, incremental.unwrap_or(false), fetch_wf).await
     }
 }
 
@@ -236,6 +239,7 @@ async fn sync_workflow_app(
     client: &DifyApiClient,
     app_id: &str,
     is_incremental: bool,
+    fetch_workflow_details: bool,
 ) -> Result<SyncResult, String> {
     let mut total_conversations: i64 = 0;
     let mut synced_conversations: i64 = 0;
@@ -351,7 +355,7 @@ async fn sync_workflow_app(
             synced_messages += 1;
 
             let run_id = &log_item.workflow_run.id;
-            if !run_id.is_empty() {
+            if fetch_workflow_details && !run_id.is_empty() {
                 let cache_key = format!("{}:{}", app_id, run_id);
                 if fetched_workflow_runs.insert(cache_key) {
                     let rid = run_id.clone();
@@ -417,6 +421,7 @@ async fn sync_chat_app(
     client: &DifyApiClient,
     app_id: &str,
     is_incremental: bool,
+    fetch_workflow_details: bool,
 ) -> Result<SyncResult, String> {
     let mut total_conversations: i64 = 0;
     let mut synced_conversations: i64 = 0;
@@ -492,11 +497,15 @@ async fn sync_chat_app(
                 }
             }
 
-            // Collect unique workflow run IDs to fetch in parallel
-            let run_ids: Vec<String> = messages.iter()
-                .filter_map(|msg| msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()).map(|id| id.to_string()))
-                .filter(|run_id| fetched_workflow_runs.insert(format!("{}:{}", app_id, run_id)))
-                .collect();
+            // Collect unique workflow run IDs to fetch in parallel (only if workflow details enabled)
+            let run_ids: Vec<String> = if fetch_workflow_details {
+                messages.iter()
+                    .filter_map(|msg| msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()).map(|id| id.to_string()))
+                    .filter(|run_id| fetched_workflow_runs.insert(format!("{}:{}", app_id, run_id)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             // Fetch workflow runs and node executions in parallel (batches of 4)
             for run_id_chunk in run_ids.chunks(4) {
@@ -756,6 +765,32 @@ fn export_node_eval_data(
     }
 }
 
+// ===== Per-App Sync Config =====
+#[tauri::command]
+fn get_sync_config(state: State<AppState>) -> Result<SyncConfig, String> {
+    state.db.get_sync_config()
+}
+
+#[tauri::command]
+fn save_sync_config(state: State<AppState>, config: SyncConfig) -> Result<(), String> {
+    state.db.save_sync_config(&config)
+}
+
+#[tauri::command]
+fn delete_app_sync_data(state: State<AppState>, app_id: String) -> Result<(), String> {
+    state.db.delete_app_sync_data(&app_id)
+}
+
+#[tauri::command]
+fn delete_app_workflow_details(state: State<AppState>, app_id: String) -> Result<(), String> {
+    state.db.delete_app_workflow_details(&app_id)
+}
+
+#[tauri::command]
+fn get_app_sync_data_info(state: State<AppState>, app_id: String) -> Result<AppSyncDataInfo, String> {
+    state.db.get_app_sync_data_info(&app_id)
+}
+
 #[tauri::command]
 fn get_auto_sync_settings(state: State<AppState>) -> Result<AutoSyncSettings, String> {
     state.db.get_auto_sync_settings()
@@ -781,22 +816,55 @@ async fn sync_all_apps(state: State<'_, AppState>, incremental: Option<bool>) ->
     let mut total_synced_msg = 0;
     let mut error_details: Vec<String> = Vec::new();
 
+    // Get sync config to know which apps to sync and whether to fetch workflow details
+    let sync_config = state.db.get_sync_config().unwrap_or(SyncConfig { apps: Vec::new() });
+    let sync_config_map: std::collections::HashMap<String, (bool, bool)> = sync_config.apps.iter()
+        .map(|s| (s.app_id.clone(), (s.enabled, s.sync_workflow_details)))
+        .collect();
+
     for app in &apps {
-        match sync_app_data(
-            state.clone(),
-            app.id.clone(),
-            Some(is_incremental),
-        )
-        .await
-        {
-            Ok(result) => {
-                success_count += 1;
-                total_synced_conv += result.synced_conversations;
-                total_synced_msg += result.synced_messages;
+        // Check if this app is enabled in sync config
+        if let Some((enabled, sync_wf)) = sync_config_map.get(&app.id) {
+            if !enabled {
+                continue;
             }
-            Err(e) => {
-                error_count += 1;
-                error_details.push(format!("{}: {}", app.name, e));
+            match sync_app_data(
+                state.clone(),
+                app.id.clone(),
+                Some(is_incremental),
+                Some(*sync_wf),
+            )
+            .await
+            {
+                Ok(result) => {
+                    success_count += 1;
+                    total_synced_conv += result.synced_conversations;
+                    total_synced_msg += result.synced_messages;
+                }
+                Err(e) => {
+                    error_count += 1;
+                    error_details.push(format!("{}: {}", app.name, e));
+                }
+            }
+        } else {
+            // No config for this app - sync with defaults (enabled, fetch workflow details)
+            match sync_app_data(
+                state.clone(),
+                app.id.clone(),
+                Some(is_incremental),
+                None,
+            )
+            .await
+            {
+                Ok(result) => {
+                    success_count += 1;
+                    total_synced_conv += result.synced_conversations;
+                    total_synced_msg += result.synced_messages;
+                }
+                Err(e) => {
+                    error_count += 1;
+                    error_details.push(format!("{}: {}", app.name, e));
+                }
             }
         }
     }
@@ -907,6 +975,11 @@ pub fn run() {
             export_feedback_data,
             get_app_node_types,
             export_node_eval_data,
+            get_sync_config,
+            save_sync_config,
+            delete_app_sync_data,
+            delete_app_workflow_details,
+            get_app_sync_data_info,
             get_auto_sync_settings,
             save_auto_sync_settings,
             sync_all_apps,

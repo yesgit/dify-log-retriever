@@ -444,6 +444,86 @@ impl Database {
         Ok(())
     }
 
+    // ===== Per-App Sync Config =====
+    pub fn get_sync_config(&self) -> Result<SyncConfig, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let json_str: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key = 'sync_config'", [], |row| row.get(0))
+            .ok();
+        match json_str {
+            Some(s) => serde_json::from_str(&s).map_err(|e| format!("解析同步配置失败: {}", e)),
+            None => Ok(SyncConfig { apps: Vec::new() }),
+        }
+    }
+
+    pub fn save_sync_config(&self, config: &SyncConfig) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let json_str = serde_json::to_string(config).map_err(|e| format!("序列化同步配置失败: {}", e))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["sync_config", json_str],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_app_sync_data_info(&self, app_id: &str) -> Result<AppSyncDataInfo, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conversation_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM conversations WHERE app_id = ?1", params![app_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let message_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE app_id = ?1", params![app_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let workflow_run_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workflow_runs WHERE app_id = ?1", params![app_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let node_execution_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM node_executions WHERE app_id = ?1", params![app_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let workflow_app_log_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workflow_app_logs WHERE app_id = ?1", params![app_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(AppSyncDataInfo {
+            conversation_count,
+            message_count,
+            workflow_run_count,
+            node_execution_count,
+            workflow_app_log_count,
+        })
+    }
+
+    /// Delete sync data (conversations, messages, workflow_app_logs, dashboard stats) but keep app record and workflow details
+    pub fn delete_app_sync_data(&self, app_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.unchecked_transaction().map_err(|e| format!("启动事务失败: {}", e))?;
+        tx.execute("DELETE FROM messages WHERE app_id = ?1", params![app_id])
+            .map_err(|e| format!("删除消息失败: {}", e))?;
+        tx.execute("DELETE FROM conversations WHERE app_id = ?1", params![app_id])
+            .map_err(|e| format!("删除对话失败: {}", e))?;
+        tx.execute("DELETE FROM workflow_app_logs WHERE app_id = ?1", params![app_id])
+            .map_err(|e| format!("删除工作流日志失败: {}", e))?;
+        tx.execute("DELETE FROM dashboard_daily_stats WHERE app_id = ?1", params![app_id])
+            .map_err(|e| format!("删除统计聚合数据失败: {}", e))?;
+        tx.commit().map_err(|e| format!("提交事务失败: {}", e))?;
+        Ok(())
+    }
+
+    /// Delete workflow details (workflow_runs, node_executions) for an app
+    pub fn delete_app_workflow_details(&self, app_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.unchecked_transaction().map_err(|e| format!("启动事务失败: {}", e))?;
+        tx.execute("DELETE FROM node_executions WHERE app_id = ?1", params![app_id])
+            .map_err(|e| format!("删除节点执行记录失败: {}", e))?;
+        tx.execute("DELETE FROM workflow_runs WHERE app_id = ?1", params![app_id])
+            .map_err(|e| format!("删除工作流运行记录失败: {}", e))?;
+        // Also clear workflow_run_id references in messages
+        tx.execute("UPDATE messages SET workflow_run_id = NULL WHERE app_id = ?1", params![app_id])
+            .map_err(|e| format!("清理消息工作流引用失败: {}", e))?;
+        tx.commit().map_err(|e| format!("提交事务失败: {}", e))?;
+        Ok(())
+    }
+
     // ===== Apps =====
     pub fn upsert_app(&self, app: &DifyApp) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;

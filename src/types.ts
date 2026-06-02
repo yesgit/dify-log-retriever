@@ -275,6 +275,25 @@ export interface AutoSyncSettings {
   last_synced_at?: number | null;
 }
 
+// ===== Per-App Sync Config =====
+export interface AppSyncSetting {
+  app_id: string;
+  enabled: boolean;
+  sync_workflow_details: boolean;
+}
+
+export interface SyncConfig {
+  apps: AppSyncSetting[];
+}
+
+export interface AppSyncDataInfo {
+  conversation_count: number;
+  message_count: number;
+  workflow_run_count: number;
+  node_execution_count: number;
+  workflow_app_log_count: number;
+}
+
 // ===== Export Options =====
 export interface ExportOptions {
   format: 'json' | 'csv' | 'jsonl';

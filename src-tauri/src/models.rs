@@ -643,6 +643,35 @@ pub struct AutoSyncSettings {
     pub last_synced_at: Option<i64>,
 }
 
+// ===== Per-App Sync Settings =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSyncSetting {
+    pub app_id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub sync_workflow_details: bool,
+}
+
+fn default_true() -> bool { true }
+
+// ===== Sync Config (per-app settings collection) =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConfig {
+    #[serde(default)]
+    pub apps: Vec<AppSyncSetting>,
+}
+
+// ===== App Sync Data Info =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSyncDataInfo {
+    pub conversation_count: i64,
+    pub message_count: i64,
+    pub workflow_run_count: i64,
+    pub node_execution_count: i64,
+    pub workflow_app_log_count: i64,
+}
+
 // ===== Feedback Query Result =====
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackMessage {
