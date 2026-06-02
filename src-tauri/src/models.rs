@@ -678,3 +678,31 @@ pub struct DbSizeInfo {
     pub node_execution_count: i64,
     pub workflow_app_log_count: i64,
 }
+
+// ===== Aggregation Status =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregationStatus {
+    pub last_aggregated_at: Option<i64>,
+    pub total_days: i64,
+}
+
+// ===== Performance Page Stats =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceStats {
+    pub model_performance: Vec<ModelPerformanceStats>,
+    pub model_token_speed_daily: Vec<ModelDailyTokenSpeed>,
+    pub node_performance: Vec<NodePerformanceStats>,
+    /// Per-node daily performance trend
+    pub node_daily_performance: Vec<NodeDailyPerformance>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeDailyPerformance {
+    pub node_type: String,
+    pub title: String,
+    pub date: String,
+    pub execution_count: i64,
+    pub avg_elapsed_time: f64,
+    pub success_count: i64,
+    pub error_count: i64,
+}

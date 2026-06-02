@@ -1,5 +1,5 @@
 // ===== Page State =====
-export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'export' | 'feedback';
+export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'performance' | 'export' | 'feedback';
 
 // ===== Config =====
 export interface DifyConfig {
@@ -241,6 +241,30 @@ export interface DailyStats {
 export interface FeedbackLabelStat {
   feedback: string;
   count: number;
+}
+
+// ===== Aggregation Status =====
+export interface AggregationStatus {
+  last_aggregated_at: number | null;
+  total_days: number;
+}
+
+// ===== Performance Stats =====
+export interface PerformanceStats {
+  model_performance: ModelPerformanceStats[];
+  model_token_speed_daily: ModelDailyTokenSpeed[];
+  node_performance: NodePerformanceStats[];
+  node_daily_performance: NodeDailyPerformance[];
+}
+
+export interface NodeDailyPerformance {
+  node_type: string;
+  title: string;
+  date: string;
+  execution_count: number;
+  avg_elapsed_time: number;
+  success_count: number;
+  error_count: number;
 }
 
 // ===== Auto Sync Settings =====

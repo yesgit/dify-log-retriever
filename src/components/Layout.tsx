@@ -13,6 +13,7 @@ import {
   Loader2,
   CheckCircle,
   XCircle,
+  Gauge,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -30,6 +31,7 @@ const navItems: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'conversations', label: '对话浏览', icon: <MessageSquare size={20} /> },
   { page: 'feedback', label: '用户反馈', icon: <ThumbsUp size={20} /> },
   { page: 'dashboard', label: '数据看板', icon: <BarChart3 size={20} /> },
+  { page: 'performance', label: '性能分析', icon: <Gauge size={20} /> },
   { page: 'export', label: '数据导出', icon: <Download size={20} /> },
 ];
 

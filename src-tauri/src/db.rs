@@ -151,6 +151,30 @@ impl Database {
                 created_at INTEGER DEFAULT 0,
                 synced_at INTEGER DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS dashboard_daily_stats (
+                app_id TEXT NOT NULL,
+                stat_date TEXT NOT NULL,
+                conversation_count INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                user_count INTEGER DEFAULT 0,
+                total_answer_tokens INTEGER DEFAULT 0,
+                total_prompt_tokens INTEGER DEFAULT 0,
+                message_effective_tokens INTEGER DEFAULT 0,
+                workflow_supplement_tokens INTEGER DEFAULT 0,
+                feedback_like INTEGER DEFAULT 0,
+                feedback_dislike INTEGER DEFAULT 0,
+                feedback_none INTEGER DEFAULT 0,
+                error_count INTEGER DEFAULT 0,
+                total_elapsed_time REAL DEFAULT 0,
+                elapsed_count INTEGER DEFAULT 0,
+                total_ttft REAL DEFAULT 0,
+                ttft_count INTEGER DEFAULT 0,
+                token_speed_sum REAL DEFAULT 0,
+                token_speed_count INTEGER DEFAULT 0,
+                aggregated_at INTEGER DEFAULT 0,
+                PRIMARY KEY (app_id, stat_date)
+            );
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -465,6 +489,8 @@ impl Database {
         conn.execute("DELETE FROM messages WHERE app_id = ?1", params![app_id])
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM conversations WHERE app_id = ?1", params![app_id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM dashboard_daily_stats WHERE app_id = ?1", params![app_id])
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM apps WHERE id = ?1", params![app_id])
             .map_err(|e| e.to_string())?;
@@ -1890,6 +1916,618 @@ impl Database {
         }
         conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
         Ok(count)
+    }
+
+    // ===== Dashboard Aggregation =====
+    pub fn rebuild_dashboard_stats(&self) -> Result<String, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now_ts: i64 = chrono::Utc::now().timestamp();
+
+        // Get all apps
+        let apps: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT id FROM apps").map_err(|e| e.to_string())?;
+            let result: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            result
+        };
+
+        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+
+        // Clear old aggregation
+        conn.execute("DELETE FROM dashboard_daily_stats", [])
+            .map_err(|e| e.to_string())?;
+
+        let total_days;
+        for app_id in &apps {
+            let insert_sql = format!(
+                "INSERT OR REPLACE INTO dashboard_daily_stats (
+                    app_id, stat_date,
+                    conversation_count, message_count, user_count,
+                    total_answer_tokens, total_prompt_tokens, message_effective_tokens, workflow_supplement_tokens,
+                    feedback_like, feedback_dislike, feedback_none,
+                    error_count,
+                    total_elapsed_time, elapsed_count,
+                    total_ttft, ttft_count,
+                    token_speed_sum, token_speed_count,
+                    aggregated_at
+                )
+                SELECT
+                    ?1 as app_id,
+                    day,
+                    SUM(conv_count), SUM(msg_count), COUNT(DISTINCT user_id),
+                    SUM(answer_token_sum), SUM(prompt_token_sum),
+                    SUM(effective_token_sum), 0,
+                    SUM(like_count), SUM(dislike_count), SUM(none_count),
+                    SUM(err_count),
+                    SUM(elapsed_sum), SUM(elapsed_cnt),
+                    SUM(ttft_sum), SUM(ttft_cnt),
+                    SUM(speed_sum), SUM(speed_cnt),
+                    ?2
+                FROM (
+                    SELECT
+                        date(created_at, 'unixepoch', 'localtime') as day,
+                        0 as conv_count,
+                        COUNT(*) as msg_count,
+                        '' as user_id,
+                        COALESCE(SUM(answer_tokens), 0) as answer_token_sum,
+                        COALESCE(SUM(prompt_tokens), 0) as prompt_token_sum,
+                        COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) as effective_token_sum,
+                        SUM(CASE WHEN feedback = 'like' THEN 1 ELSE 0 END) as like_count,
+                        SUM(CASE WHEN feedback = 'dislike' THEN 1 ELSE 0 END) as dislike_count,
+                        SUM(CASE WHEN feedback IS NULL THEN 1 ELSE 0 END) as none_count,
+                        SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as err_count,
+                        COALESCE(SUM(CASE WHEN elapsed_time > 0 THEN elapsed_time ELSE 0 END), 0) as elapsed_sum,
+                        SUM(CASE WHEN elapsed_time > 0 THEN 1 ELSE 0 END) as elapsed_cnt,
+                        COALESCE(SUM(CASE WHEN provider_response_latency > 0 THEN provider_response_latency ELSE 0 END), 0) as ttft_sum,
+                        SUM(CASE WHEN provider_response_latency > 0 THEN 1 ELSE 0 END) as ttft_cnt,
+                        COALESCE(SUM(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time ELSE 0 END), 0) as speed_sum,
+                        SUM(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN 1 ELSE 0 END) as speed_cnt
+                    FROM messages
+                    WHERE app_id = ?1 AND query != ''
+                    GROUP BY day, conversation_id
+                ) sub
+                GROUP BY day"
+            );
+            match conn.execute(&insert_sql, params![app_id, now_ts]) {
+                Ok(_) => {},
+                Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); }
+            }
+
+            // Update user_count properly with a separate query
+            let user_count_sql = format!(
+                "UPDATE dashboard_daily_stats SET user_count = (
+                    SELECT COUNT(DISTINCT c.from_end_user_id)
+                    FROM conversations c
+                    WHERE c.app_id = dashboard_daily_stats.app_id
+                      AND c.from_end_user_id != ''
+                      AND date(c.created_at, 'unixepoch', 'localtime') = dashboard_daily_stats.stat_date
+                )
+                WHERE dashboard_daily_stats.app_id = ?1"
+            );
+            match conn.execute(&user_count_sql, params![app_id]) {
+                Ok(_) => {},
+                Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); }
+            }
+
+            // Update conversation_count properly
+            let conv_count_sql = format!(
+                "UPDATE dashboard_daily_stats SET conversation_count = (
+                    SELECT COUNT(DISTINCT c.conversation_id)
+                    FROM conversations c
+                    WHERE c.app_id = dashboard_daily_stats.app_id
+                      AND date(c.created_at, 'unixepoch', 'localtime') = dashboard_daily_stats.stat_date
+                )
+                WHERE dashboard_daily_stats.app_id = ?1"
+            );
+            match conn.execute(&conv_count_sql, params![app_id]) {
+                Ok(_) => {},
+                Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); }
+            }
+
+            // Update workflow_supplement_tokens
+            let wf_supp_sql = format!(
+                "UPDATE dashboard_daily_stats SET workflow_supplement_tokens = COALESCE((
+                    SELECT SUM(
+                        CASE WHEN wr.total_tokens > sub.msg_token_sum THEN wr.total_tokens - sub.msg_token_sum ELSE 0 END
+                    )
+                    FROM (
+                        SELECT m.app_id, m.workflow_run_id,
+                               SUM(CASE WHEN m.message_tokens > 0 THEN m.message_tokens ELSE (m.answer_tokens + m.prompt_tokens) END) as msg_token_sum,
+                               MAX(date(m.created_at, 'unixepoch', 'localtime')) as run_day
+                        FROM messages m
+                        WHERE m.app_id = ?1 AND m.workflow_run_id IS NOT NULL AND m.workflow_run_id != ''
+                        GROUP BY m.app_id, m.workflow_run_id
+                    ) sub
+                    LEFT JOIN workflow_runs wr ON wr.app_id = sub.app_id AND wr.workflow_run_id = sub.workflow_run_id
+                    WHERE sub.run_day = dashboard_daily_stats.stat_date
+                ), 0)
+                WHERE dashboard_daily_stats.app_id = ?1"
+            );
+            match conn.execute(&wf_supp_sql, params![app_id]) {
+                Ok(_) => {},
+                Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); }
+            }
+        }
+
+        total_days = conn.query_row(
+            "SELECT COUNT(DISTINCT stat_date) FROM dashboard_daily_stats",
+            [], |row| row.get(0),
+        ).unwrap_or(0);
+
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+
+        Ok(format!("聚合完成: {} 个应用, {} 天数据, 耗时 <1s", apps.len(), total_days))
+    }
+
+    pub fn get_aggregation_status(&self) -> Result<AggregationStatus, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let last_aggregated_at: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(aggregated_at) FROM dashboard_daily_stats",
+                [], |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        let total_days: i64 = conn
+            .query_row("SELECT COUNT(DISTINCT stat_date) FROM dashboard_daily_stats", [], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(AggregationStatus { last_aggregated_at, total_days })
+    }
+
+    /// Get dashboard stats from pre-aggregated data (fast).
+    pub fn get_dashboard_stats_from_agg(
+        &self,
+        app_id: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> Result<DashboardStats, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        // Build WHERE clause with parameterized queries to prevent SQL injection
+        let mut where_parts = vec!["1=1".to_string()];
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(aid) = app_id {
+            where_parts.push(format!("dds.app_id = ?{}", params.len() + 1));
+            params.push(Box::new(aid.to_string()));
+        }
+        if let Some(st) = start_time {
+            where_parts.push(format!(
+                "dds.stat_date >= date(?{}, 'unixepoch', 'localtime')",
+                params.len() + 1
+            ));
+            params.push(Box::new(st));
+        }
+        if let Some(et) = end_time {
+            where_parts.push(format!(
+                "dds.stat_date <= date(?{}, 'unixepoch', 'localtime')",
+                params.len() + 1
+            ));
+            params.push(Box::new(et));
+        }
+        let where_clause = where_parts.join(" AND ");
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        // Fast aggregation from pre-computed daily stats
+        let total_conversations: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(conversation_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let total_messages: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(message_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let total_users: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(user_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let total_answer_tokens: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(total_answer_tokens), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let total_prompt_tokens: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(total_prompt_tokens), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let effective_tokens: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(message_effective_tokens), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let wf_supp: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(workflow_supplement_tokens), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let total_tokens = effective_tokens + wf_supp;
+        let feedback_like: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(feedback_like), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let feedback_dislike: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(feedback_dislike), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let feedback_none: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(feedback_none), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let error_count: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(error_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let _: f64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(total_elapsed_time), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let _elapsed_count: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(elapsed_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let _ttft_sum: f64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(total_ttft), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let _ttft_count: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(ttft_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let _speed_sum: f64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(token_speed_sum), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let _speed_count: i64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(token_speed_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        let total_apps: i64 = if let Some(aid) = app_id {
+            conn.query_row("SELECT COUNT(*) FROM apps WHERE id = ?1", params![aid], |row| row.get(0)).unwrap_or(1)
+        } else {
+            conn.query_row("SELECT COUNT(*) FROM apps", [], |row| row.get(0)).map_err(|e| e.to_string())?
+        };
+
+        let feedback_total = feedback_like + feedback_dislike;
+        let feedback_like_rate = if feedback_total > 0 { feedback_like as f64 / feedback_total as f64 * 100.0 } else { 0.0 };
+        let error_rate = if total_messages > 0 { error_count as f64 / total_messages as f64 * 100.0 } else { 0.0 };
+        let satisfaction_rate = if total_messages > 0 { feedback_like as f64 / total_messages as f64 * 1000.0 } else { 0.0 };
+        let avg_conversation_interactions = if total_conversations > 0 { total_messages as f64 / total_conversations as f64 } else { 0.0 };
+        let avg_feedback_per_user = if total_users > 0 { feedback_total as f64 / total_users as f64 } else { 0.0 };
+        let avg_feedback_per_conversation = if total_conversations > 0 { feedback_total as f64 / total_conversations as f64 } else { 0.0 };
+        let avg_feedback_per_message = if total_messages > 0 { feedback_total as f64 / total_messages as f64 } else { 0.0 };
+
+        // Compute days in range
+        let days_in_range: f64 = conn.query_row(
+            &format!("SELECT COALESCE(COUNT(DISTINCT stat_date), 1) FROM dashboard_daily_stats dds WHERE {}", where_clause),
+            param_refs.as_slice(), |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let daily_avg_tokens = if days_in_range > 0.0 { total_tokens as f64 / days_in_range } else { 0.0 };
+
+        // Distributions still need raw queries (not pre-aggregated)
+        let msg_where = build_where(app_id, start_time, end_time);
+        let msg_where_q = format!("query != '' AND {}", msg_where);
+        let conv_where = build_conv_where(app_id, start_time, end_time);
+        let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
+        let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
+
+        let messages_per_conversation_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(msg_count AS REAL) FROM (
+                    SELECT app_id, conversation_id, COUNT(*) as msg_count
+                    FROM messages WHERE {}
+                    GROUP BY app_id, conversation_id
+                ) sub",
+                msg_where_q
+            ),
+        )?;
+        let conversations_per_user_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(conv_count AS REAL) FROM (
+                    SELECT from_end_user_id, COUNT(*) as conv_count
+                    FROM conversations c WHERE from_end_user_id != '' AND {}
+                    GROUP BY from_end_user_id
+                ) sub",
+                conv_where
+            ),
+        )?;
+        let messages_per_user_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(msg_count AS REAL) FROM (
+                    SELECT c.from_end_user_id, COUNT(*) as msg_count
+                    FROM conversations c
+                    INNER JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id
+                    WHERE c.from_end_user_id != '' AND {}
+                    GROUP BY c.from_end_user_id
+                ) sub",
+                msg_where_m_q
+            ),
+        )?;
+        let ttft_distribution = compute_distribution(
+            &conn,
+            &format!("SELECT provider_response_latency FROM messages WHERE provider_response_latency > 0 AND {}", msg_where_q),
+        )?;
+        let elapsed_time_distribution = compute_distribution(
+            &conn,
+            &format!("SELECT elapsed_time FROM messages WHERE elapsed_time > 0 AND {}", msg_where_q),
+        )?;
+        let token_per_message_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT (CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END) FROM messages WHERE (CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END) > 0 AND {}",
+                msg_where_q
+            ),
+        )?;
+        let token_speed_distribution = compute_distribution(
+            &conn,
+            &format!("SELECT CAST(answer_tokens AS REAL) / elapsed_time FROM messages WHERE elapsed_time > 0 AND answer_tokens > 0 AND {}", msg_where_q),
+        )?;
+        let user_feedback_count_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(feedback_count AS REAL) FROM (
+                    SELECT c.from_end_user_id, COUNT(m.id) as feedback_count
+                    FROM conversations c
+                    LEFT JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id AND m.feedback IS NOT NULL
+                    WHERE c.from_end_user_id != '' AND {}
+                    GROUP BY c.from_end_user_id
+                ) sub",
+                conv_where
+            ),
+        )?;
+        let conversation_feedback_count_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(feedback_count AS REAL) FROM (
+                    SELECT c.app_id, c.conversation_id, COUNT(m.id) as feedback_count
+                    FROM conversations c
+                    LEFT JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id AND m.feedback IS NOT NULL
+                    WHERE {}
+                    GROUP BY c.app_id, c.conversation_id
+                ) sub",
+                conv_where
+            ),
+        )?;
+        let message_feedback_count_distribution = compute_distribution(
+            &conn,
+            &format!(
+                "SELECT CAST(json_array_length(feedbacks) AS REAL) FROM messages WHERE feedback IS NOT NULL AND json_array_length(feedbacks) >= 0 AND {}",
+                msg_where_q
+            ),
+        )?;
+
+        let feedback_with_content: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM messages WHERE feedback IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM json_each(feedbacks) WHERE
+                        (COALESCE(json_extract(value, '$.rating'), json_extract(value, '$.label'), json_extract(value, '$.value'), '') != '')
+                        OR (COALESCE(json_extract(value, '$.content'), json_extract(value, '$.message'), '') != '')
+                ) AND {}",
+                msg_where_q
+            ),
+            [], |row| row.get(0),
+        ).map_err(|e| e.to_string()).unwrap_or(0);
+
+        let feedback_label_sql = format!(
+            "SELECT COALESCE(feedback, 'none') as fb_label, COUNT(*) as cnt FROM messages WHERE {} GROUP BY fb_label ORDER BY cnt DESC",
+            msg_where_q
+        );
+        let mut stmt = conn.prepare(&feedback_label_sql).map_err(|e| e.to_string())?;
+        let feedback_label_stats: Vec<FeedbackLabelStat> = stmt.query_map([], |row| {
+            Ok(FeedbackLabelStat { feedback: row.get(0)?, count: row.get(1)? })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        let top_apps_sql = format!(
+            "SELECT c.app_id, a.name, COUNT(DISTINCT c.conversation_id) as conv_count, COUNT(m.id) as msg_count
+             FROM conversations c
+             LEFT JOIN apps a ON c.app_id = a.id
+             LEFT JOIN messages m ON m.app_id = c.app_id AND m.conversation_id = c.conversation_id AND m.query != ''
+             WHERE {}
+             GROUP BY c.app_id
+             ORDER BY conv_count DESC
+             LIMIT 10",
+            conv_where
+        );
+        let mut stmt = conn.prepare(&top_apps_sql).map_err(|e| e.to_string())?;
+        let top_apps: Vec<AppRanking> = stmt.query_map([], |row| {
+            Ok(AppRanking {
+                app_id: row.get(0)?,
+                app_name: row.get(1).unwrap_or_else(|_| "Unknown".to_string()),
+                conversation_count: row.get(2)?,
+                message_count: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        // Daily trend from aggregation table
+        let daily_sql = format!(
+            "SELECT stat_date,
+                    conversation_count, message_count,
+                    message_effective_tokens + workflow_supplement_tokens as token_sum,
+                    user_count, error_count,
+                    feedback_like, feedback_dislike,
+                    CASE WHEN elapsed_count > 0 THEN total_elapsed_time / elapsed_count ELSE 0 END as avg_elapsed,
+                    CASE WHEN ttft_count > 0 THEN total_ttft / ttft_count ELSE 0 END as avg_ttft_val,
+                    CASE WHEN token_speed_count > 0 THEN token_speed_sum / token_speed_count ELSE 0 END as avg_speed,
+                    total_answer_tokens, total_prompt_tokens
+             FROM dashboard_daily_stats dds
+             WHERE {}
+             ORDER BY stat_date ASC",
+            where_clause
+        );
+        let mut stmt = conn.prepare(&daily_sql).map_err(|e| e.to_string())?;
+        let recent_daily: Vec<DailyStats> = stmt.query_map(param_refs.as_slice(), |row| {
+            Ok(DailyStats {
+                date: row.get(0)?,
+                conversations: row.get(1)?,
+                messages: row.get(2)?,
+                tokens: row.get(3)?,
+                users: row.get(4)?,
+                errors: row.get(5)?,
+                likes: row.get(6)?,
+                dislikes: row.get(7)?,
+                avg_elapsed_time: row.get(8)?,
+                avg_ttft: row.get(9)?,
+                avg_token_speed: row.get(10)?,
+                total_answer_tokens: row.get(11)?,
+                total_prompt_tokens: row.get(12)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        Ok(DashboardStats {
+            total_apps, total_users, total_conversations, total_messages,
+            total_answer_tokens, total_prompt_tokens, total_tokens, daily_avg_tokens,
+            messages_per_conversation_distribution, conversations_per_user_distribution,
+            messages_per_user_distribution,
+            feedback_total, feedback_like, feedback_dislike, feedback_none,
+            feedback_with_content, feedback_like_rate,
+            avg_feedback_per_user, avg_feedback_per_conversation, avg_feedback_per_message,
+            error_count, error_rate,
+            satisfaction_rate, avg_conversation_interactions,
+            ttft_distribution, elapsed_time_distribution,
+            token_per_message_distribution, token_speed_distribution,
+            user_feedback_count_distribution, conversation_feedback_count_distribution,
+            message_feedback_count_distribution,
+            feedback_label_stats, top_apps, recent_daily,
+            model_token_speed_daily: vec![], // moved to performance page
+            model_performance: vec![],       // moved to performance page
+            node_performance: vec![],        // moved to performance page
+        })
+    }
+
+    // ===== Performance Stats =====
+    pub fn get_performance_stats(
+        &self,
+        app_id: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> Result<PerformanceStats, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let msg_where = build_where(app_id, start_time, end_time);
+        let msg_where_q = format!("query != '' AND {}", msg_where);
+        let node_where = build_where_prefixed("ne.", app_id, start_time, end_time);
+
+        // Model performance
+        let model_perf_sql = format!(
+            "SELECT
+                COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
+                COUNT(*) as msg_count,
+                COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) as total_tokens,
+                COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
+                COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft,
+                COALESCE(AVG(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time END), 0) as avg_speed,
+                SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as err_count
+             FROM messages
+             WHERE {}
+             GROUP BY model
+             ORDER BY msg_count DESC",
+            msg_where_q
+        );
+        let mut model_perf_stmt = conn.prepare(&model_perf_sql).map_err(|e| e.to_string())?;
+        let model_performance: Vec<ModelPerformanceStats> = model_perf_stmt.query_map([], |row| {
+            let msg_count: i64 = row.get(1)?;
+            let err_count: i64 = row.get(6)?;
+            Ok(ModelPerformanceStats {
+                model: row.get(0)?,
+                message_count: msg_count,
+                total_tokens: row.get(2)?,
+                avg_elapsed_time: row.get(3)?,
+                avg_ttft: row.get(4)?,
+                avg_token_speed: row.get(5)?,
+                error_count: err_count,
+                error_rate: if msg_count > 0 { err_count as f64 / msg_count as f64 * 100.0 } else { 0.0 },
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        // Model daily token speed
+        let model_speed_sql = format!(
+            "SELECT
+                COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
+                date(created_at, 'unixepoch', 'localtime') as day,
+                AVG(CASE WHEN elapsed_time > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time ELSE 0 END) as avg_speed,
+                COUNT(*) as cnt
+             FROM messages
+             WHERE answer_tokens > 0 AND elapsed_time > 0 AND {}
+             GROUP BY model, day
+             ORDER BY model, day",
+            msg_where_q
+        );
+        let mut model_stmt = conn.prepare(&model_speed_sql).map_err(|e| e.to_string())?;
+        let model_token_speed_daily: Vec<ModelDailyTokenSpeed> = model_stmt.query_map([], |row| {
+            Ok(ModelDailyTokenSpeed {
+                model: row.get(0)?,
+                date: row.get(1)?,
+                avg_token_speed: row.get(2)?,
+                message_count: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        // Node performance
+        let node_perf_sql = format!(
+            "SELECT
+                ne.node_type,
+                COALESCE(NULLIF(ne.title, ''), '(未命名)') as title,
+                COUNT(*) as exec_count,
+                COALESCE(AVG(ne.elapsed_time), 0) as avg_elapsed,
+                SUM(CASE WHEN ne.status = 'succeeded' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN ne.status != 'succeeded' THEN 1 ELSE 0 END) as err_count
+             FROM node_executions ne
+             WHERE ne.node_type != '' AND {}
+             GROUP BY ne.node_type, COALESCE(NULLIF(ne.title, ''), '(未命名)')
+             ORDER BY exec_count DESC",
+            node_where
+        );
+        let mut node_perf_stmt = conn.prepare(&node_perf_sql).map_err(|e| e.to_string())?;
+        let node_performance: Vec<NodePerformanceStats> = node_perf_stmt.query_map([], |row| {
+            let exec_count: i64 = row.get(2)?;
+            let success_count: i64 = row.get(4)?;
+            Ok(NodePerformanceStats {
+                node_type: row.get(0)?,
+                title: row.get(1)?,
+                execution_count: exec_count,
+                avg_elapsed_time: row.get(3)?,
+                success_count,
+                success_rate: if exec_count > 0 { success_count as f64 / exec_count as f64 * 100.0 } else { 0.0 },
+                error_count: row.get(5)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        // Node daily performance trend
+        let node_daily_sql = format!(
+            "SELECT
+                ne.node_type,
+                COALESCE(NULLIF(ne.title, ''), '(未命名)') as title,
+                date(ne.created_at, 'unixepoch', 'localtime') as day,
+                COUNT(*) as exec_count,
+                COALESCE(AVG(ne.elapsed_time), 0) as avg_elapsed,
+                SUM(CASE WHEN ne.status = 'succeeded' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN ne.status != 'succeeded' THEN 1 ELSE 0 END) as err_count
+             FROM node_executions ne
+             WHERE ne.node_type != '' AND {}
+             GROUP BY ne.node_type, COALESCE(NULLIF(ne.title, ''), '(未命名)'), day
+             ORDER BY ne.node_type, title, day",
+            node_where
+        );
+        let mut node_daily_stmt = conn.prepare(&node_daily_sql).map_err(|e| e.to_string())?;
+        let node_daily_performance: Vec<NodeDailyPerformance> = node_daily_stmt.query_map([], |row| {
+            Ok(NodeDailyPerformance {
+                node_type: row.get(0)?,
+                title: row.get(1)?,
+                date: row.get(2)?,
+                execution_count: row.get(3)?,
+                avg_elapsed_time: row.get(4)?,
+                success_count: row.get(5)?,
+                error_count: row.get(6)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        Ok(PerformanceStats {
+            model_performance,
+            model_token_speed_daily,
+            node_performance,
+            node_daily_performance,
+        })
     }
 
     // ===== Database Maintenance =====

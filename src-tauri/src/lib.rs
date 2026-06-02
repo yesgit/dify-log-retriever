@@ -594,7 +594,32 @@ fn get_dashboard_stats(
     start_time: Option<i64>,
     end_time: Option<i64>,
 ) -> Result<DashboardStats, String> {
-    state.db.get_dashboard_stats(app_id.as_deref(), start_time, end_time)
+    let agg_status = state.db.get_aggregation_status()?;
+    if agg_status.last_aggregated_at.is_some() {
+        state.db.get_dashboard_stats_from_agg(app_id.as_deref(), start_time, end_time)
+    } else {
+        state.db.get_dashboard_stats(app_id.as_deref(), start_time, end_time)
+    }
+}
+
+#[tauri::command]
+fn rebuild_dashboard_stats(state: State<AppState>) -> Result<String, String> {
+    state.db.rebuild_dashboard_stats()
+}
+
+#[tauri::command]
+fn get_aggregation_status(state: State<AppState>) -> Result<AggregationStatus, String> {
+    state.db.get_aggregation_status()
+}
+
+#[tauri::command]
+fn get_performance_stats(
+    state: State<AppState>,
+    app_id: Option<String>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+) -> Result<PerformanceStats, String> {
+    state.db.get_performance_stats(app_id.as_deref(), start_time, end_time)
 }
 
 #[tauri::command]
@@ -798,7 +823,12 @@ fn export_dashboard_excel(
     end_time: Option<i64>,
     save_path: Option<String>,
 ) -> Result<String, String> {
-    let stats = state.db.get_dashboard_stats(app_id.as_deref(), start_time, end_time)?;
+    let agg_status = state.db.get_aggregation_status()?;
+    let stats = if agg_status.last_aggregated_at.is_some() {
+        state.db.get_dashboard_stats_from_agg(app_id.as_deref(), start_time, end_time)?
+    } else {
+        state.db.get_dashboard_stats(app_id.as_deref(), start_time, end_time)?
+    };
 
     // Resolve app name for the report header
     let app_name = if let Some(ref aid) = app_id {
@@ -869,6 +899,9 @@ pub fn run() {
             get_conversations,
             get_messages,
             get_dashboard_stats,
+            rebuild_dashboard_stats,
+            get_aggregation_status,
+            get_performance_stats,
             export_data,
             get_feedback_messages,
             export_feedback_data,

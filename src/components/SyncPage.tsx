@@ -210,6 +210,14 @@ export function SyncPage() {
         });
       }
     }
+
+    // Trigger dashboard aggregation after successful sync
+    try {
+      await invoke<string>('rebuild_dashboard_stats');
+    } catch (e) {
+      console.error('Auto agg failed:', e);
+    }
+
     setSyncing(false);
   };
 

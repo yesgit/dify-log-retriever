@@ -8,6 +8,7 @@ import { SyncPage } from './components/SyncPage';
 import { ConversationsPage } from './components/ConversationsPage';
 import { FeedbackPage } from './components/FeedbackPage';
 import { DashboardPage } from './components/DashboardPage';
+import { PerformancePage } from './components/PerformancePage';
 import { ExportPage } from './components/ExportPage';
 
 function App() {
@@ -42,6 +43,8 @@ function App() {
       });
       setAutoSyncStatus('success');
       setLastAutoSyncResult(result);
+      // Trigger dashboard aggregation after successful sync
+      try { await invoke<string>('rebuild_dashboard_stats'); } catch (e) { console.error('Auto agg failed:', e); }
       // Reload settings to get updated last_synced_at
       const newSettings = await invoke<AutoSyncSettings>('get_auto_sync_settings');
       if (newSettings) {
@@ -167,6 +170,8 @@ function App() {
         return <FeedbackPage />;
       case 'dashboard':
         return <DashboardPage />;
+      case 'performance':
+        return <PerformancePage />;
       case 'export':
         return <ExportPage />;
       default:
