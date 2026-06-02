@@ -1469,13 +1469,13 @@ impl Database {
         let feedback_total = feedback_like + feedback_dislike;
         let feedback_like_rate = if feedback_total > 0 { feedback_like as f64 / feedback_total as f64 * 100.0 } else { 0.0 };
 
-        // Feedback with content: feedbacks JSON array has at least one item with non-empty rating (label) or content
+        // Feedback with content: feedbacks JSON array has at least one item with non-empty label/rating or content/message
         let feedback_with_content: i64 = conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM messages WHERE feedback IS NOT NULL AND EXISTS (
                     SELECT 1 FROM json_each(feedbacks) WHERE
-                        (json_extract(value, '$.rating') IS NOT NULL AND json_extract(value, '$.rating') != '')
-                        OR (json_extract(value, '$.content') IS NOT NULL AND json_extract(value, '$.content') != '')
+                        (COALESCE(json_extract(value, '$.rating'), json_extract(value, '$.label'), json_extract(value, '$.value'), '') != '')
+                        OR (COALESCE(json_extract(value, '$.content'), json_extract(value, '$.message'), '') != '')
                 ) AND {}",
                 msg_where_q
             ),
@@ -1740,6 +1740,30 @@ impl Database {
         };
         let daily_avg_tokens = total_tokens as f64 / days_in_range;
 
+        // ── Per-model token speed daily trend ──
+        // Extract model from message_metadata JSON field and group by model + date
+        let model_speed_sql = format!(
+            "SELECT
+                COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
+                date(created_at, 'unixepoch', 'localtime') as day,
+                AVG(CASE WHEN elapsed_time > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time ELSE 0 END) as avg_speed,
+                COUNT(*) as cnt
+             FROM messages
+             WHERE answer_tokens > 0 AND elapsed_time > 0 AND {}
+             GROUP BY model, day
+             ORDER BY model, day",
+            msg_where_q
+        );
+        let mut model_stmt = conn.prepare(&model_speed_sql).map_err(|e| e.to_string())?;
+        let model_token_speed_daily: Vec<ModelDailyTokenSpeed> = model_stmt.query_map([], |row| {
+            Ok(ModelDailyTokenSpeed {
+                model: row.get(0)?,
+                date: row.get(1)?,
+                avg_token_speed: row.get(2)?,
+                message_count: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
         Ok(DashboardStats {
             total_apps,
             total_users,
@@ -1775,6 +1799,7 @@ impl Database {
             feedback_label_stats,
             top_apps,
             recent_daily,
+            model_token_speed_daily,
         })
     }
 }

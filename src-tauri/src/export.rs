@@ -579,7 +579,7 @@ pub fn export_node_eval_to_file(
 
 // ===== Dashboard Export Functions =====
 
-pub fn export_dashboard_to_excel(stats: &DashboardStats, app_name: &str) -> Result<String, String> {
+pub fn export_dashboard_to_excel(stats: &DashboardStats, app_name: &str, save_path: Option<&std::path::Path>) -> Result<String, String> {
     let mut workbook = Workbook::new();
 
     let header_format = Format::new()
@@ -796,7 +796,7 @@ pub fn export_dashboard_to_excel(stats: &DashboardStats, app_name: &str) -> Resu
 
     // Save file
     let default_filename = format!("dashboard_export_{}.xlsx", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-    let path = pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename));
+    let path = save_path.map(|p| p.to_path_buf()).unwrap_or_else(|| pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename)));
     workbook.save(&path).map_err(|e| format!("保存 Excel 失败: {}", e))?;
 
     Ok(format!("已导出到: {}", path.display()))

@@ -1,20 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
+import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
 import html2canvas from 'html2canvas';
 import {
   BarChart3, MessageSquare, Users, Zap, ThumbsUp, ThumbsDown, Minus,
-  AlertTriangle, Clock, Activity, Filter, Info, Download, Camera, Loader2
+  AlertTriangle, Clock, Activity, Filter, Info, Download, Camera, Loader2,
+  FolderOpen, ExternalLink
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
   ResponsiveContainer, Legend
 } from 'recharts';
-import type { DashboardStats, DailyStats, DifyApp, StatDistribution, FeedbackLabelStat } from '../types';
+import type { DashboardStats, DailyStats, DifyApp, StatDistribution, FeedbackLabelStat, ModelDailyTokenSpeed } from '../types';
 
 // ===== Time Range Presets =====
 interface TimePreset {
   label: string;
-  getRange: () => [number, number];
+  getRange: () => [number | undefined, number | undefined];
 }
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -45,6 +48,7 @@ const startOfYear = (d: Date) => {
 };
 
 const TIME_PRESETS: TimePreset[] = [
+  { label: '全部时间', getRange: () => [undefined, undefined] },
   { label: '过去24小时', getRange: () => [now() - 86400, now()] },
   { label: '过去3天', getRange: () => [now() - 3 * 86400, now()] },
   { label: '过去7天', getRange: () => [now() - 7 * 86400, now()] },
@@ -65,7 +69,7 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [apps, setApps] = useState<DifyApp[]>([]);
   const [selectedAppId, setSelectedAppId] = useState<string>('');
-  const [selectedPresetIdx, setSelectedPresetIdx] = useState<number>(2);
+  const [selectedPresetIdx, setSelectedPresetIdx] = useState<number>(3);
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
   const [useCustom, setUseCustom] = useState(false);
@@ -73,6 +77,7 @@ export function DashboardPage() {
   const [exportingScreenshot, setExportingScreenshot] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [exportMsgIsError, setExportMsgIsError] = useState(false);
+  const [exportFilePath, setExportFilePath] = useState<string | null>(null);
   const dashboardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { loadApps(); }, []);
@@ -123,11 +128,19 @@ export function DashboardPage() {
     setExportMsg(null);
     try {
       const { startTime, endTime } = getTimeRange();
+      const defaultName = `dashboard_export_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.xlsx`;
+      const filePath = await save({
+        defaultPath: defaultName,
+        filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+      });
+      if (!filePath) { setExportingExcel(false); return; }
       const result = await invoke<string>('export_dashboard_excel', {
         appId: selectedAppId || null,
         startTime,
         endTime,
+        savePath: filePath,
       });
+      setExportFilePath(filePath);
       setExportMsg(result);
       setExportMsgIsError(false);
     } catch (e: any) {
@@ -158,7 +171,6 @@ export function DashboardPage() {
       for (let i = 0; i < binaryStr.length; i++) {
         bytes[i] = binaryStr.charCodeAt(i);
       }
-      const { save } = await import('@tauri-apps/plugin-dialog');
       const filePath = await save({
         defaultPath: `dashboard_screenshot_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.png`,
         filters: [{ name: 'PNG Image', extensions: ['png'] }],
@@ -166,6 +178,7 @@ export function DashboardPage() {
       if (filePath) {
         const { writeFile } = await import('@tauri-apps/plugin-fs');
         await writeFile(filePath, bytes);
+        setExportFilePath(filePath);
         setExportMsg(`截图已保存到: ${filePath}`);
         setExportMsgIsError(false);
       }
@@ -310,8 +323,26 @@ export function DashboardPage() {
             ? 'bg-red-50 text-red-700 border border-red-200'
             : 'bg-green-50 text-green-700 border border-green-200'
         }`}>
-          {exportMsg}
-          <button onClick={() => { setExportMsg(null); setExportMsgIsError(false); }} className="ml-auto text-current opacity-60 hover:opacity-100">✕</button>
+          <span className="flex-1">{exportMsg}</span>
+          {!exportMsgIsError && exportFilePath && (
+            <div className="flex items-center gap-1.5 ml-2">
+              <button
+                onClick={async () => { try { await openPath(exportFilePath); } catch(e) { console.error(e); } }}
+                className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"
+                title="打开文件"
+              >
+                <ExternalLink size={12} /> 打开文件
+              </button>
+              <button
+                onClick={async () => { try { await revealItemInDir(exportFilePath); } catch(e) { console.error(e); } }}
+                className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"
+                title="打开文件夹"
+              >
+                <FolderOpen size={12} /> 打开文件夹
+              </button>
+            </div>
+          )}
+          <button onClick={() => { setExportMsg(null); setExportMsgIsError(false); setExportFilePath(null); }} className="ml-1 text-current opacity-60 hover:opacity-100">✕</button>
         </div>
       )}
 
@@ -531,6 +562,13 @@ export function DashboardPage() {
               <p className="text-sm text-gray-400">暂无数据</p>
             )}
           </Section>
+
+          {/* Per-Model Token Speed Trend */}
+          {stats.model_token_speed_daily && stats.model_token_speed_daily.length > 0 && (
+            <Section title="各模型 Token 速度趋势">
+              <ModelTokenSpeedChart data={stats.model_token_speed_daily} />
+            </Section>
+          )}
 
           {/* Top Apps */}
           {!selectedAppId && stats.top_apps && stats.top_apps.length > 0 && (
@@ -827,6 +865,57 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  );
+}
+
+// ── Per-Model Token Speed Trend Chart ──
+const MODEL_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'];
+
+function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
+  if (!data || data.length === 0) return null;
+
+  // Get unique models and all dates
+  const models = [...new Set(data.map(d => d.model))];
+  const dates = [...new Set(data.map(d => d.date))].sort();
+
+  // Build pivot: date -> { model -> speed }
+  const pivot = dates.map(date => {
+    const row: Record<string, any> = { date };
+    for (const model of models) {
+      const item = data.find(d => d.date === date && d.model === model);
+      row[model] = item ? Number(item.avg_token_speed.toFixed(1)) : null;
+    }
+    return row;
+  });
+
+  return (
+    <div>
+      <h4 className="text-sm font-medium text-gray-700 mb-3">各模型 Token 生成速度趋势</h4>
+      <ResponsiveContainer width="100%" height={300}>
+        <LineChart data={pivot}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+          <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit=" t/s" />
+          <RechartsTooltip
+            contentStyle={{ fontSize: 12, borderRadius: 8 }}
+            formatter={(v: any, name: any) => [v !== null && v !== undefined ? `${Number(v).toFixed(1)} t/s` : '无数据', name]}
+          />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          {models.map((model, idx) => (
+            <Line
+              key={model}
+              type="monotone"
+              dataKey={model}
+              name={model}
+              stroke={MODEL_COLORS[idx % MODEL_COLORS.length]}
+              strokeWidth={2}
+              dot={false}
+              connectNulls={false}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }

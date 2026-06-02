@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Download, FileJson, FileSpreadsheet, FileText, Loader2, CheckCircle, Cpu, MessageSquare, Brain } from 'lucide-react';
+import { save } from '@tauri-apps/plugin-dialog';
+import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
+import { Download, FileJson, FileSpreadsheet, FileText, Loader2, CheckCircle, Cpu, MessageSquare, Brain, FolderOpen, ExternalLink } from 'lucide-react';
 import type { DifyApp } from '../types';
 
 interface NodeTypeSummary {
@@ -27,6 +29,7 @@ export function ExportPage() {
   const [includeAgentThoughts, setIncludeAgentThoughts] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<string | null>(null);
+  const [exportFilePath, setExportFilePath] = useState<string | null>(null);
 
   // Node eval export state
   const [nodeAppId, setNodeAppId] = useState<string>('');
@@ -38,6 +41,7 @@ export function ExportPage() {
   const [nodeEndDate, setNodeEndDate] = useState('');
   const [nodeExporting, setNodeExporting] = useState(false);
   const [nodeExportResult, setNodeExportResult] = useState<string | null>(null);
+  const [nodeExportFilePath, setNodeExportFilePath] = useState<string | null>(null);
   const [nodeTypesLoading, setNodeTypesLoading] = useState(false);
 
   useEffect(() => {
@@ -79,7 +83,20 @@ export function ExportPage() {
   const handleExport = async () => {
     setExporting(true);
     setExportResult(null);
+    setExportFilePath(null);
     try {
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '');
+      const filters: { name: string; extensions: string[] }[] = format === 'csv'
+        ? [{ name: 'CSV', extensions: ['csv'] }]
+        : format === 'jsonl'
+          ? [{ name: 'JSONL', extensions: ['jsonl'] }]
+          : [{ name: 'JSON', extensions: ['json'] }];
+      const ext = format;
+      const filePath = await save({
+        defaultPath: `dify_export_${ts}.${ext}`,
+        filters,
+      });
+      if (!filePath) { setExporting(false); return; }
       const result = await invoke<string>('export_data', {
         format,
         appId: selectedApp || null,
@@ -88,7 +105,9 @@ export function ExportPage() {
         keyword: keyword || null,
         includeMetadata,
         includeAgentThoughts,
+        savePath: filePath,
       });
+      setExportFilePath(filePath);
       setExportResult(result);
     } catch (e: any) {
       setExportResult(`导出失败: ${e}`);
@@ -104,7 +123,14 @@ export function ExportPage() {
     }
     setNodeExporting(true);
     setNodeExportResult(null);
+    setNodeExportFilePath(null);
     try {
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '');
+      const filePath = await save({
+        defaultPath: `node_eval_${nodeEvalFormat}_${ts}.jsonl`,
+        filters: [{ name: 'JSONL', extensions: ['jsonl'] }],
+      });
+      if (!filePath) { setNodeExporting(false); return; }
       const result = await invoke<string>('export_node_eval_data', {
         format: nodeEvalFormat,
         appId: nodeAppId,
@@ -112,7 +138,9 @@ export function ExportPage() {
         nodeId: selectedNodeId || null,
         startDate: nodeStartDate || null,
         endDate: nodeEndDate || null,
+        savePath: filePath,
       });
+      setNodeExportFilePath(filePath);
       setNodeExportResult(result);
     } catch (e: any) {
       setNodeExportResult(`导出失败: ${e}`);
@@ -293,7 +321,14 @@ export function ExportPage() {
                 : 'bg-green-50 text-green-700 border border-green-200'
             }`}>
               {exportResult.startsWith('导出失败') ? null : <CheckCircle size={16} />}
-              {exportResult}
+              <span className="flex-1">{exportResult}</span>
+              {!exportResult.startsWith('导出失败') && exportFilePath && (
+                <div className="flex items-center gap-1.5">
+                  <button onClick={async () => { try { await openPath(exportFilePath); } catch(e) { console.error(e); } }} className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"><ExternalLink size={12} /> 打开文件</button>
+                  <button onClick={async () => { try { await revealItemInDir(exportFilePath); } catch(e) { console.error(e); } }} className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"><FolderOpen size={12} /> 打开文件夹</button>
+                </div>
+              )}
+              <button onClick={() => { setExportResult(null); setExportFilePath(null); }} className="ml-1 text-current opacity-60 hover:opacity-100">✕</button>
             </div>
           )}
 
@@ -505,7 +540,14 @@ export function ExportPage() {
                 : 'bg-green-50 text-green-700 border border-green-200'
             }`}>
               {nodeExportResult.startsWith('导出失败') ? null : <CheckCircle size={16} />}
-              {nodeExportResult}
+              <span className="flex-1">{nodeExportResult}</span>
+              {!nodeExportResult.startsWith('导出失败') && nodeExportFilePath && (
+                <div className="flex items-center gap-1.5">
+                  <button onClick={async () => { try { await openPath(nodeExportFilePath); } catch(e) { console.error(e); } }} className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"><ExternalLink size={12} /> 打开文件</button>
+                  <button onClick={async () => { try { await revealItemInDir(nodeExportFilePath); } catch(e) { console.error(e); } }} className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"><FolderOpen size={12} /> 打开文件夹</button>
+                </div>
+              )}
+              <button onClick={() => { setNodeExportResult(null); setNodeExportFilePath(null); }} className="ml-1 text-current opacity-60 hover:opacity-100">✕</button>
             </div>
           )}
 

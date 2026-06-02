@@ -442,6 +442,16 @@ pub struct DashboardStats {
     // Rankings & trends
     pub top_apps: Vec<AppRanking>,
     pub recent_daily: Vec<DailyStats>,
+    // Per-model token speed trend
+    pub model_token_speed_daily: Vec<ModelDailyTokenSpeed>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelDailyTokenSpeed {
+    pub model: String,
+    pub date: String,
+    pub avg_token_speed: f64,
+    pub message_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -579,6 +579,7 @@ fn export_data(
     keyword: Option<String>,
     include_metadata: bool,
     include_agent_thoughts: bool,
+    save_path: Option<String>,
 ) -> Result<String, String> {
     let messages = state.db.get_messages_for_export(
         app_id.as_deref(),
@@ -598,10 +599,15 @@ fn export_data(
         _ => return Err(format!("不支持的格式: {}", format)),
     };
 
-    let ext = format;
-    let default_filename = format!("dify_export_{}.{}", chrono::Local::now().format("%Y%m%d_%H%M%S"), ext);
-
-    export::save_export_file_with_dialog(&content, &default_filename, &ext)
+    if let Some(sp) = save_path {
+        let path = std::path::PathBuf::from(&sp);
+        std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))?;
+        Ok(format!("已导出到: {}", path.display()))
+    } else {
+        let ext = format;
+        let default_filename = format!("dify_export_{}.{}", chrono::Local::now().format("%Y%m%d_%H%M%S"), ext);
+        export::save_export_file_with_dialog(&content, &default_filename, &ext)
+    }
 }
 
 #[tauri::command]
@@ -672,6 +678,7 @@ fn export_node_eval_data(
     node_id: Option<String>,
     start_date: Option<String>,
     end_date: Option<String>,
+    save_path: Option<String>,
 ) -> Result<String, String> {
     let records = state.db.get_node_executions_for_export(
         &app_id,
@@ -685,7 +692,14 @@ fn export_node_eval_data(
         return Err("没有找到匹配的节点执行数据。请确认该应用已同步，且存在成功的 LLM/Agent 节点执行记录。".to_string());
     }
 
-    export::export_node_eval_to_file(&records, &format)
+    if let Some(sp) = save_path {
+        let content = export::export_node_eval(&records, &format)?;
+        let path = std::path::PathBuf::from(&sp);
+        std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))?;
+        Ok(format!("已导出到: {}", path.display()))
+    } else {
+        export::export_node_eval_to_file(&records, &format)
+    }
 }
 
 #[tauri::command]
@@ -753,6 +767,7 @@ fn export_dashboard_excel(
     app_id: Option<String>,
     start_time: Option<i64>,
     end_time: Option<i64>,
+    save_path: Option<String>,
 ) -> Result<String, String> {
     let stats = state.db.get_dashboard_stats(app_id.as_deref(), start_time, end_time)?;
 
@@ -768,7 +783,8 @@ fn export_dashboard_excel(
         String::new()
     };
 
-    export::export_dashboard_to_excel(&stats, &app_name)
+    let path = save_path.map(std::path::PathBuf::from);
+    export::export_dashboard_to_excel(&stats, &app_name, path.as_deref())
 }
 
 #[tauri::command]

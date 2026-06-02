@@ -10,6 +10,7 @@
     "fs:default",
     "fs:allow-read",
     "fs:allow-write",
-    "opener:default"
+    "opener:default",
+    "opener:allow-open-path"
   ]
 }

@@ -181,6 +181,14 @@ export interface DashboardStats {
   // Rankings & trends
   top_apps: AppRanking[];
   recent_daily: DailyStats[];
+  model_token_speed_daily: ModelDailyTokenSpeed[];
+}
+
+export interface ModelDailyTokenSpeed {
+  model: string;
+  date: string;
+  avg_token_speed: number;
+  message_count: number;
 }
 
 export interface AppRanking {
