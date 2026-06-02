@@ -281,6 +281,26 @@ impl DifyApiClient {
         Ok(run)
     }
 
+    // ===== Fetch Workflow App Logs (for workflow-type apps) =====
+    pub async fn fetch_workflow_app_logs(
+        &self,
+        app_id: &str,
+        page: i64,
+        limit: i64,
+    ) -> Result<DifyWorkflowAppLogsResponse, String> {
+        let result: DifyWorkflowAppLogsResponse = self
+            .send_json(
+                self.authed_get(&format!("/apps/{}/workflow-app-logs", app_id))
+                    .query(&[
+                        ("page", page.to_string()),
+                        ("limit", limit.to_string()),
+                    ]),
+                "获取 workflow 应用日志失败",
+            )
+            .await?;
+        Ok(result)
+    }
+
     pub async fn fetch_node_executions(
         &self,
         app_id: &str,

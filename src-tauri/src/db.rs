@@ -123,6 +123,24 @@ impl Database {
                 raw_json TEXT DEFAULT '{}',
                 synced_at INTEGER DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS workflow_app_logs (
+                id TEXT PRIMARY KEY,
+                app_id TEXT NOT NULL,
+                log_id TEXT NOT NULL,
+                workflow_run_id TEXT DEFAULT '',
+                status TEXT DEFAULT '',
+                elapsed_time REAL DEFAULT 0.0,
+                total_tokens INTEGER DEFAULT 0,
+                total_steps INTEGER DEFAULT 0,
+                created_from TEXT DEFAULT '',
+                created_by_role TEXT DEFAULT '',
+                created_by_end_user_id TEXT DEFAULT '',
+                created_by_end_user_session_id TEXT DEFAULT '',
+                error TEXT DEFAULT 'null',
+                created_at INTEGER DEFAULT 0,
+                synced_at INTEGER DEFAULT 0
+            );
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -145,6 +163,9 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_workflow_runs_app_run ON workflow_runs(app_id, workflow_run_id);
             CREATE INDEX IF NOT EXISTS idx_node_executions_app_run ON node_executions(app_id, workflow_run_id);
             CREATE INDEX IF NOT EXISTS idx_node_executions_app_type ON node_executions(app_id, node_type, node_id, status);
+            CREATE INDEX IF NOT EXISTS idx_workflow_app_logs_app ON workflow_app_logs(app_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_app_logs_run_id ON workflow_app_logs(app_id, workflow_run_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_app_logs_created ON workflow_app_logs(app_id, created_at);
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -430,6 +451,8 @@ impl Database {
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM workflow_runs WHERE app_id = ?1", params![app_id])
             .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM workflow_app_logs WHERE app_id = ?1", params![app_id])
+            .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM messages WHERE app_id = ?1", params![app_id])
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM conversations WHERE app_id = ?1", params![app_id])
@@ -437,6 +460,84 @@ impl Database {
         conn.execute("DELETE FROM apps WHERE id = ?1", params![app_id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    // ===== Workflow App Logs =====
+    pub fn upsert_workflow_app_log(&self, app_id: &str, log: &DifyWorkflowAppLogItem) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let id = format!("{}:{}", app_id, log.id);
+        let end_user_id = log.created_by_end_user.as_ref().map(|u| u.id.clone()).unwrap_or_default();
+        let end_user_session_id = log.created_by_end_user.as_ref().map(|u| u.session_id.clone()).unwrap_or_default();
+        conn.execute(
+            "INSERT OR REPLACE INTO workflow_app_logs (
+                id, app_id, log_id, workflow_run_id, status, elapsed_time, total_tokens, total_steps,
+                created_from, created_by_role, created_by_end_user_id, created_by_end_user_session_id,
+                error, created_at, synced_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, strftime('%s','now'))",
+            params![
+                id,
+                app_id,
+                log.id,
+                log.workflow_run.id,
+                log.workflow_run.status,
+                log.workflow_run.elapsed_time,
+                log.workflow_run.total_tokens,
+                log.workflow_run.total_steps,
+                log.created_from,
+                log.created_by_role,
+                end_user_id,
+                end_user_session_id,
+                json_string(log.workflow_run.error.as_ref().unwrap_or(&serde_json::Value::Null), "null"),
+                log.created_at,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn get_workflow_app_log_count(&self, app_id: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workflow_app_logs WHERE app_id = ?1",
+                params![app_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(count)
+    }
+
+    /// Get the maximum created_at timestamp among existing workflow app logs.
+    /// Used for incremental sync to know where to stop.
+    pub fn get_workflow_app_log_max_created_at(&self, app_id: &str) -> Result<Option<i64>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let result: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(created_at) FROM workflow_app_logs WHERE app_id = ?1",
+                params![app_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        // .optional returns Ok(Some(row)) or Ok(None); row.get(0) could be NULL
+        Ok(result)
+    }
+
+    /// Check if a workflow app log already exists by its log_id
+    #[allow(dead_code)]
+    pub fn workflow_app_log_exists(&self, app_id: &str, log_id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let id = format!("{}:{}", app_id, log_id);
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM workflow_app_logs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(exists)
     }
 
     // ===== Incremental Sync Helpers =====

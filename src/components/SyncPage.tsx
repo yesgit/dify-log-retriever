@@ -443,17 +443,34 @@ export function SyncPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <h3 className="font-medium text-gray-900 text-sm">{app.name}</h3>
+                        <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${
+                          app.mode === 'workflow'
+                            ? 'bg-purple-100 text-purple-700'
+                            : app.mode === 'completion'
+                            ? 'bg-orange-100 text-orange-700'
+                            : 'bg-blue-100 text-blue-700'
+                        }`}>
+                          {app.mode === 'workflow' ? 'Workflow' : app.mode === 'completion' ? 'Completion' : 'Chat'}
+                        </span>
                         {getStatusIcon(status?.status || 'idle')}
                       </div>
                       {status && status.status !== 'idle' && (
                         <div className="mt-2">
                           <div className="flex items-center gap-4 text-xs text-gray-500">
-                            <span>
-                              对话: {status.synced_conversations}/{status.total_conversations}
-                            </span>
-                            <span>
-                              消息: {status.synced_messages}/{status.total_messages}
-                            </span>
+                            {app.mode === 'workflow' ? (
+                              <span>
+                                日志: {status.synced_messages}/{status.total_messages}
+                              </span>
+                            ) : (
+                              <>
+                                <span>
+                                  对话: {status.synced_conversations}/{status.total_conversations}
+                                </span>
+                                <span>
+                                  消息: {status.synced_messages}/{status.total_messages}
+                                </span>
+                              </>
+                            )}
                             <span>
                               Workflow: {status.synced_workflow_runs}
                             </span>

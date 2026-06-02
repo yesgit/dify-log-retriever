@@ -194,22 +194,155 @@ async fn sync_app_data(
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
 
-    // Try initial request; auto-refresh on auth error
-    let client = match client.fetch_conversations(&app_id, 1, 1).await {
-        Ok(_) => client,
-        Err(ref e) if DifyApiClient::is_auth_error(e) => {
-            let refreshed_config = try_auto_refresh(&state.db).await?;
-            DifyApiClient::new(
-                &refreshed_config.api_base,
-                &refreshed_config.api_key,
-                refreshed_config.proxy.as_deref(),
-            )?
+    // Determine app mode from local DB
+    let apps = state.db.get_apps()?;
+    let app_mode = apps
+        .iter()
+        .find(|a| a.id == app_id)
+        .map(|a| a.mode.clone())
+        .unwrap_or_default();
+
+    // Auto-refresh on auth error
+    let client = {
+        let probe_result = if app_mode == "workflow" {
+            client.fetch_workflow_app_logs(&app_id, 1, 1).await.map(|_| ())
+        } else {
+            client.fetch_conversations(&app_id, 1, 1).await.map(|_| ())
+        };
+        match probe_result {
+            Ok(()) => Ok(client),
+            Err(ref e) if DifyApiClient::is_auth_error(e) => {
+                let refreshed_config = try_auto_refresh(&state.db).await?;
+                DifyApiClient::new(
+                    &refreshed_config.api_base,
+                    &refreshed_config.api_key,
+                    refreshed_config.proxy.as_deref(),
+                )
+            }
+            Err(e) => Err(e),
         }
-        Err(e) => return Err(e),
+    }?;
+
+    if app_mode == "workflow" {
+        sync_workflow_app(&state, &client, &app_id, incremental.unwrap_or(false)).await
+    } else {
+        sync_chat_app(&state, &client, &app_id, incremental.unwrap_or(false)).await
+    }
+}
+
+/// Sync workflow-type app using workflow-app-logs API
+async fn sync_workflow_app(
+    state: &State<'_, AppState>,
+    client: &DifyApiClient,
+    app_id: &str,
+    is_incremental: bool,
+) -> Result<SyncResult, String> {
+    let total_conversations: i64 = 0;
+    let synced_conversations: i64 = 0;
+    let mut total_messages: i64 = 0;
+    let mut synced_messages: i64 = 0;
+    let mut synced_workflow_runs: i64 = 0;
+    let mut synced_node_executions: i64 = 0;
+    let mut failed_details: i64 = 0;
+    let mut fetched_workflow_runs: HashSet<String> = HashSet::new();
+    let mut page: i64 = 1;
+    let limit: i64 = 100;
+
+    // For incremental sync, get the latest created_at from local DB to know when to stop
+    let max_local_created_at: Option<i64> = if is_incremental {
+        state.db.get_workflow_app_log_max_created_at(app_id)?
+    } else {
+        None
     };
 
-    let is_incremental = incremental.unwrap_or(false);
+    loop {
+        let logs_resp = client.fetch_workflow_app_logs(app_id, page, limit).await?;
+        total_messages += logs_resp.data.len() as i64;
 
+        for log_item in &logs_resp.data {
+            // In incremental mode, stop when we reach data older than our latest local record.
+            // Use < (strict less-than) to re-process any logs at the same timestamp boundary,
+            // ensuring we don't miss logs that share the same created_at second.
+            if is_incremental {
+                if let Some(max_ts) = max_local_created_at {
+                    if log_item.created_at < max_ts {
+                        // Reached previously synced data; stop
+                        return Ok(SyncResult {
+                            total_conversations,
+                            synced_conversations,
+                            total_messages,
+                            synced_messages,
+                            synced_workflow_runs,
+                            synced_node_executions,
+                            failed_details,
+                            new_conversations: 0,
+                            updated_conversations: 0,
+                            skipped_conversations: 0,
+                        });
+                    }
+                }
+            }
+
+            state.db.upsert_workflow_app_log(app_id, log_item)?;
+            synced_messages += 1;
+
+            let run_id = &log_item.workflow_run.id;
+            if !run_id.is_empty() {
+                let cache_key = format!("{}:{}", app_id, run_id);
+                if fetched_workflow_runs.insert(cache_key) {
+                    match client.fetch_workflow_run(app_id, run_id).await {
+                        Ok(run) => {
+                            state.db.upsert_workflow_run(app_id, &run)?;
+                            synced_workflow_runs += 1;
+                        }
+                        Err(_) => {
+                            failed_details += 1;
+                        }
+                    }
+
+                    match client.fetch_node_executions(app_id, run_id).await {
+                        Ok(nodes) => {
+                            for node in &nodes {
+                                state.db.upsert_node_execution(app_id, run_id, node)?;
+                                synced_node_executions += 1;
+                            }
+                        }
+                        Err(_) => {
+                            failed_details += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if logs_resp.has_more {
+            page += 1;
+        } else {
+            break;
+        }
+    }
+
+    Ok(SyncResult {
+        total_conversations,
+        synced_conversations,
+        total_messages,
+        synced_messages,
+        synced_workflow_runs,
+        synced_node_executions,
+        failed_details,
+        new_conversations: 0,
+        updated_conversations: 0,
+        skipped_conversations: 0,
+    })
+}
+
+/// Sync chat/agent-type app using conversations + messages API
+async fn sync_chat_app(
+    state: &State<'_, AppState>,
+    client: &DifyApiClient,
+    app_id: &str,
+    is_incremental: bool,
+) -> Result<SyncResult, String> {
     let mut total_conversations: i64 = 0;
     let mut synced_conversations: i64 = 0;
     let mut total_messages: i64 = 0;
@@ -224,12 +357,12 @@ async fn sync_app_data(
     let mut page: i64 = 1;
 
     loop {
-        let conv_resp = client.fetch_conversations(&app_id, 100, page).await?;
+        let conv_resp = client.fetch_conversations(app_id, 100, page).await?;
 
         // In incremental mode, check which conversations have changed
         let local_updated_map = if is_incremental && !conv_resp.data.is_empty() {
             let ids: Vec<String> = conv_resp.data.iter().map(|c| c.id.clone()).collect();
-            state.db.get_conversations_updated_at(&app_id, &ids)?
+            state.db.get_conversations_updated_at(app_id, &ids)?
         } else {
             std::collections::HashMap::new()
         };
@@ -241,47 +374,44 @@ async fn sync_app_data(
             if is_incremental {
                 if let Some(local_updated) = local_updated_map.get(&conv.id) {
                     if *local_updated == conv.updated_at {
-                        // Conversation hasn't changed, skip
                         skipped_conversations += 1;
                         page_skipped += 1;
                         continue;
                     } else {
-                        // Conversation has been updated
                         updated_conversations += 1;
                     }
                 } else {
-                    // New conversation
                     new_conversations += 1;
                 }
             }
 
             total_conversations += 1;
-            state.db.upsert_conversation(&app_id, conv)?;
+            state.db.upsert_conversation(app_id, conv)?;
             synced_conversations += 1;
 
-            match client.fetch_conversation_detail(&app_id, &conv.id).await {
+            match client.fetch_conversation_detail(app_id, &conv.id).await {
                 Ok(mut detail) => {
                     fill_missing_conversation_detail(&mut detail, conv);
-                    state.db.upsert_conversation(&app_id, &detail)?;
+                    state.db.upsert_conversation(app_id, &detail)?;
                 }
                 Err(_) => {
                     failed_details += 1;
                 }
             }
 
-            let messages = client.fetch_messages(&app_id, &conv.id, 100).await?;
+            let messages = client.fetch_messages(app_id, &conv.id, 100).await?;
             total_messages += messages.len() as i64;
 
             for msg in &messages {
-                state.db.upsert_message(&app_id, &conv.id, msg)?;
+                state.db.upsert_message(app_id, &conv.id, msg)?;
                 synced_messages += 1;
 
                 if let Some(run_id) = msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()) {
                     let cache_key = format!("{}:{}", app_id, run_id);
                     if fetched_workflow_runs.insert(cache_key) {
-                        match client.fetch_workflow_run(&app_id, run_id).await {
+                        match client.fetch_workflow_run(app_id, run_id).await {
                             Ok(run) => {
-                                state.db.upsert_workflow_run(&app_id, &run)?;
+                                state.db.upsert_workflow_run(app_id, &run)?;
                                 synced_workflow_runs += 1;
                             }
                             Err(_) => {
@@ -289,10 +419,10 @@ async fn sync_app_data(
                             }
                         }
 
-                        match client.fetch_node_executions(&app_id, run_id).await {
+                        match client.fetch_node_executions(app_id, run_id).await {
                             Ok(nodes) => {
                                 for node in &nodes {
-                                    state.db.upsert_node_execution(&app_id, run_id, node)?;
+                                    state.db.upsert_node_execution(app_id, run_id, node)?;
                                     synced_node_executions += 1;
                                 }
                             }

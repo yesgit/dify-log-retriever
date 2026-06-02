@@ -521,6 +521,79 @@ pub struct NodeTypeSummary {
     pub count: i64,
 }
 
+// ===== Workflow App Logs =====
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct DifyWorkflowAppLogsResponse {
+    #[serde(default)]
+    pub data: Vec<DifyWorkflowAppLogItem>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub total: i64,
+    #[serde(default)]
+    pub limit: i64,
+    #[serde(default)]
+    pub page: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct DifyWorkflowAppLogItem {
+    pub id: String,
+    #[serde(default)]
+    pub workflow_run: DifyWorkflowAppLogRunSummary,
+    #[serde(default, rename = "created_from")]
+    pub created_from: String,
+    #[serde(default, rename = "created_by_role")]
+    pub created_by_role: String,
+    #[serde(default, rename = "created_by_account")]
+    pub created_by_account: Option<serde_json::Value>,
+    #[serde(default, rename = "created_by_end_user")]
+    pub created_by_end_user: Option<DifyWorkflowAppLogEndUser>,
+    #[serde(default)]
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct DifyWorkflowAppLogRunSummary {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub error: Option<serde_json::Value>,
+    #[serde(default)]
+    pub elapsed_time: f64,
+    #[serde(default)]
+    pub total_tokens: i64,
+    #[serde(default)]
+    pub total_steps: i64,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub finished_at: i64,
+    #[serde(default)]
+    pub exceptions_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct DifyWorkflowAppLogEndUser {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    pub end_user_type: String,
+    #[serde(default)]
+    pub is_anonymous: bool,
+    #[serde(default)]
+    pub session_id: String,
+}
+
 // ===== Auto Sync Settings =====
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoSyncSettings {
