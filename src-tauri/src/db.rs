@@ -166,6 +166,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_workflow_app_logs_app ON workflow_app_logs(app_id);
             CREATE INDEX IF NOT EXISTS idx_workflow_app_logs_run_id ON workflow_app_logs(app_id, workflow_run_id);
             CREATE INDEX IF NOT EXISTS idx_workflow_app_logs_created ON workflow_app_logs(app_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_messages_app_run ON messages(app_id, workflow_run_id);
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -1323,6 +1324,9 @@ impl Database {
         // Query-only WHERE: only messages with non-empty query (user questions)
         let msg_where_q = format!("query != '' AND {}", msg_where);
         let conv_where = build_conv_where(app_id, start_time, end_time);
+        // Prefixed message WHERE for queries that alias messages as `m`.
+        let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
+        let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
 
         // ── Basic counts ──
         let total_apps: i64 = if let Some(aid) = app_id {
@@ -1365,28 +1369,47 @@ impl Database {
             [],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
-        let total_tokens = total_answer_tokens + total_prompt_tokens;
+        // Message-level effective tokens:
+        // - Prefer message_tokens when available
+        // - Fallback to prompt + answer for historical records without message_tokens
+        let message_effective_tokens: i64 = conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) FROM messages WHERE {}",
+                msg_where_q
+            ),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
 
-        // Days in range for daily average: compute from filter or actual data span
-        let days_in_range = if let (Some(s), Some(e)) = (start_time, end_time) {
-            ((e - s) as f64 / 86400.0).max(1.0)
-        } else if let Some(s) = start_time {
-            let now_ts: i64 = conn.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
-            ((now_ts - s) as f64 / 86400.0).max(1.0)
-        } else {
-            // No time filter: compute from actual data span
-            let span: (i64, i64) = conn.query_row(
-                &format!("SELECT COALESCE(MIN(created_at), 0), COALESCE(MAX(created_at), 0) FROM messages WHERE {}", msg_where_q),
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).unwrap_or((0, 0));
-            if span.1 > span.0 {
-                ((span.1 - span.0) as f64 / 86400.0).max(1.0)
-            } else {
-                1.0
-            }
-        };
-        let daily_avg_tokens = total_tokens as f64 / days_in_range;
+        // Workflow supplement (non-duplicating):
+        // build run scope from the same filtered message set, then add only run-level remainder.
+        let workflow_supplement_tokens: i64 = conn.query_row(
+            &format!(
+                "WITH workflow_run_scope AS (
+                    SELECT m.app_id,
+                           m.workflow_run_id,
+                           SUM(CASE WHEN m.message_tokens > 0 THEN m.message_tokens ELSE (m.answer_tokens + m.prompt_tokens) END) AS msg_token_sum,
+                           COALESCE(MAX(wr.total_tokens), 0) AS run_total_tokens
+                    FROM messages m
+                    LEFT JOIN workflow_runs wr
+                      ON wr.app_id = m.app_id AND wr.workflow_run_id = m.workflow_run_id
+                    WHERE m.workflow_run_id IS NOT NULL AND m.workflow_run_id != '' AND {}
+                    GROUP BY m.app_id, m.workflow_run_id
+                )
+                SELECT COALESCE(SUM(
+                    CASE
+                        WHEN run_total_tokens > msg_token_sum THEN run_total_tokens - msg_token_sum
+                        ELSE 0
+                    END
+                ), 0)
+                FROM workflow_run_scope",
+                msg_where_m_q
+            ),
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        let total_tokens = message_effective_tokens + workflow_supplement_tokens;
 
         // ── Average distributions ──
         let messages_per_conversation_distribution = compute_distribution(
@@ -1412,10 +1435,6 @@ impl Database {
                 conv_where
             ),
         )?;
-
-        // For user messages distribution, need prefixed where clause
-        let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
-        let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
 
         let messages_per_user_distribution = compute_distribution(
             &conn,
@@ -1496,7 +1515,10 @@ impl Database {
         // Tokens per message
         let token_per_message_distribution = compute_distribution(
             &conn,
-            &format!("SELECT (answer_tokens + prompt_tokens) FROM messages WHERE (answer_tokens + prompt_tokens) > 0 AND {}", msg_where_q),
+            &format!(
+                "SELECT (CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END) FROM messages WHERE (CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END) > 0 AND {}",
+                msg_where_q
+            ),
         )?;
 
         // Token speed (tokens/s) = answer_tokens / elapsed_time
@@ -1609,23 +1631,70 @@ impl Database {
         }
 
         let daily_sql = format!(
-            "SELECT date(created_at, 'unixepoch', 'localtime') as day,
-             COUNT(DISTINCT conversation_id) as conv_count,
-             COUNT(*) as msg_count,
-             COALESCE(SUM(answer_tokens + prompt_tokens), 0) as token_sum,
-             SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as error_count,
-             SUM(CASE WHEN feedback = 'like' THEN 1 ELSE 0 END) as like_count,
-             SUM(CASE WHEN feedback = 'dislike' THEN 1 ELSE 0 END) as dislike_count,
-             COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
-             COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft_val,
-             COALESCE(AVG(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time END), 0) as avg_speed,
-             COALESCE(SUM(answer_tokens), 0) as answer_token_sum,
-             COALESCE(SUM(prompt_tokens), 0) as prompt_token_sum
-             FROM messages
-            WHERE {}
-            GROUP BY day
-            ORDER BY day ASC",
-            msg_where_q
+            "WITH message_daily AS (
+                SELECT date(created_at, 'unixepoch', 'localtime') as day,
+                       COUNT(DISTINCT conversation_id) as conv_count,
+                       COUNT(*) as msg_count,
+                       COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) as msg_token_sum,
+                       SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as error_count,
+                       SUM(CASE WHEN feedback = 'like' THEN 1 ELSE 0 END) as like_count,
+                       SUM(CASE WHEN feedback = 'dislike' THEN 1 ELSE 0 END) as dislike_count,
+                       COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
+                       COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft_val,
+                       COALESCE(AVG(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time END), 0) as avg_speed,
+                       COALESCE(SUM(answer_tokens), 0) as answer_token_sum,
+                       COALESCE(SUM(prompt_tokens), 0) as prompt_token_sum
+                FROM messages
+                WHERE {}
+                GROUP BY day
+            ),
+            workflow_run_scope AS (
+                SELECT m.app_id,
+                       m.workflow_run_id,
+                       date(MAX(m.created_at), 'unixepoch', 'localtime') as workflow_day,
+                       SUM(CASE WHEN m.message_tokens > 0 THEN m.message_tokens ELSE (m.answer_tokens + m.prompt_tokens) END) as msg_token_sum,
+                       COALESCE(MAX(wr.total_tokens), 0) as run_total_tokens
+                FROM messages m
+                LEFT JOIN workflow_runs wr
+                  ON wr.app_id = m.app_id AND wr.workflow_run_id = m.workflow_run_id
+                WHERE m.workflow_run_id IS NOT NULL AND m.workflow_run_id != '' AND {}
+                GROUP BY m.app_id, m.workflow_run_id
+            ),
+            workflow_daily AS (
+                SELECT workflow_day as day,
+                       COALESCE(SUM(
+                           CASE
+                               WHEN run_total_tokens > msg_token_sum THEN run_total_tokens - msg_token_sum
+                               ELSE 0
+                           END
+                       ), 0) as wf_token_sum
+                FROM workflow_run_scope
+                WHERE workflow_day IS NOT NULL
+                GROUP BY workflow_day
+            ),
+            all_days AS (
+                SELECT day FROM message_daily
+                UNION
+                SELECT day FROM workflow_daily
+            )
+            SELECT d.day,
+                   COALESCE(md.conv_count, 0) as conv_count,
+                   COALESCE(md.msg_count, 0) as msg_count,
+                   COALESCE(md.msg_token_sum, 0) + COALESCE(wd.wf_token_sum, 0) as token_sum,
+                   COALESCE(md.error_count, 0) as error_count,
+                   COALESCE(md.like_count, 0) as like_count,
+                   COALESCE(md.dislike_count, 0) as dislike_count,
+                   COALESCE(md.avg_elapsed, 0) as avg_elapsed,
+                   COALESCE(md.avg_ttft_val, 0) as avg_ttft_val,
+                   COALESCE(md.avg_speed, 0) as avg_speed,
+                   COALESCE(md.answer_token_sum, 0) as answer_token_sum,
+                   COALESCE(md.prompt_token_sum, 0) as prompt_token_sum
+            FROM all_days d
+            LEFT JOIN message_daily md ON md.day = d.day
+            LEFT JOIN workflow_daily wd ON wd.day = d.day
+            ORDER BY d.day ASC",
+            msg_where_q,
+            msg_where_m_q
         );
         let mut stmt = conn.prepare(&daily_sql).map_err(|e| e.to_string())?;
         let recent_daily: Vec<DailyStats> = stmt.query_map([], |row| {
@@ -1649,6 +1718,27 @@ impl Database {
         }).map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+
+        // Keep denominator aligned with the merged daily timeline when no full explicit range is provided.
+        let days_in_range = if let (Some(s), Some(e)) = (start_time, end_time) {
+            (((e - s) as f64 / 86400.0).floor() + 1.0).max(1.0)
+        } else if let Some(s) = start_time {
+            let now_ts: i64 = conn.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
+            (((now_ts - s) as f64 / 86400.0).floor() + 1.0).max(1.0)
+        } else if recent_daily.len() >= 2 {
+            // Use SQL julianday to compute calendar span from the daily results
+            let first = &recent_daily.first().unwrap().date;
+            let last = &recent_daily.last().unwrap().date;
+            let span: i64 = conn.query_row(
+                "SELECT CAST(julianday(?1) - julianday(?2) + 1 AS INTEGER)",
+                params![last, first],
+                |row| row.get(0),
+            ).unwrap_or(1);
+            (span as f64).max(1.0)
+        } else {
+            1.0
+        };
+        let daily_avg_tokens = total_tokens as f64 / days_in_range;
 
         Ok(DashboardStats {
             total_apps,

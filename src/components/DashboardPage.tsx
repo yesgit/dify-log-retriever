@@ -431,16 +431,21 @@ export function DashboardPage() {
               <SmallStat label="Answer Tokens" value={formatStatNumber(stats.total_answer_tokens)}
                 tooltip="所有消息的 Answer Token 用量（输出部分）" />
               <SmallStat label="总 Token 量" value={formatStatNumber(stats.total_tokens)}
-                tooltip="总 Token = Prompt Tokens + Answer Tokens，单位为 Dify 报告的 Token 数" />
+                tooltip="总 Token = 消息有效 Token（优先 message_tokens，否则用 Prompt + Answer）+ workflow 额外消耗（去重后）" />
               <SmallStat label="日均 Token 消耗" value={formatStatNumber(Math.round(stats.daily_avg_tokens))}
                 tooltip="日均消耗 = 总 Token 量 / 时间范围内的天数" />
             </div>
+            {stats.total_tokens !== (stats.total_prompt_tokens + stats.total_answer_tokens) && (
+              <p className="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                💡 总 Token 量包含了 workflow 运行中未被消息直接覆盖的额外消耗，因此可能大于 Prompt + Answer 之和。
+              </p>
+            )}
             {stats.token_per_message_distribution && (
               <DistributionTable
                 title="每条消息 Token 消耗分布"
                 dist={stats.token_per_message_distribution}
                 format={(v) => Math.round(v).toLocaleString()}
-                tooltip="统计每条消息的 Token 消耗（Prompt + Answer），样本为 Token 消耗大于 0 的消息。单位为 Dify 报告的 Token 数。"
+                tooltip="统计每条消息的有效 Token 消耗（优先 message_tokens，否则用 Prompt + Answer），样本为消耗大于 0 的消息"
               />
             )}
           </Section>

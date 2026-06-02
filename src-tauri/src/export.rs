@@ -642,8 +642,8 @@ pub fn export_dashboard_to_excel(stats: &DashboardStats, app_name: &str) -> Resu
     let ratio_metrics: [(&str, f64); 4] = [
         ("平均会话互动数", stats.avg_conversation_interactions),
         ("用户满意度 (‰)", stats.satisfaction_rate),
-        ("好评率 (%)", stats.feedback_like_rate * 100.0),
-        ("异常率 (%)", stats.error_rate * 100.0),
+        ("好评率 (%)", stats.feedback_like_rate),
+        ("异常率 (%)", stats.error_rate),
     ];
     for (label, value) in &ratio_metrics {
         overview.write_string_with_format(row, 0, *label, &label_format).map_err(|e| e.to_string())?;
@@ -696,7 +696,7 @@ pub fn export_dashboard_to_excel(stats: &DashboardStats, app_name: &str) -> Resu
     overview.write_number_with_format(row, 1, stats.error_count as f64, &number_format).map_err(|e| e.to_string())?;
     row += 1;
     overview.write_string_with_format(row, 0, "异常率", &label_format).map_err(|e| e.to_string())?;
-    overview.write_number_with_format(row, 1, stats.error_rate, &percent_format).map_err(|e| e.to_string())?;
+    overview.write_number_with_format(row, 1, stats.error_rate / 100.0, &percent_format).map_err(|e| e.to_string())?;
 
     overview.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
 
