@@ -666,3 +666,15 @@ pub struct FeedbackResult {
     pub data: Vec<FeedbackMessage>,
     pub total: i64,
 }
+
+// ===== Database Maintenance =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbSizeInfo {
+    pub total_bytes: i64,
+    pub raw_json_bytes: i64,
+    pub conversation_count: i64,
+    pub message_count: i64,
+    pub workflow_run_count: i64,
+    pub node_execution_count: i64,
+    pub workflow_app_log_count: i64,
+}

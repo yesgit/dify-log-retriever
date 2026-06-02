@@ -26,6 +26,16 @@ pub struct Database {
 impl Database {
     pub fn open(path: &Path) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
+
+        // Enable WAL mode and performance PRAGMAs
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA cache_size=-64000;
+             PRAGMA temp_store=MEMORY;
+             PRAGMA mmap_size=268435456;"
+        ).map_err(|e| format!("PRAGMA 设置失败: {}", e))?;
+
         let db = Self {
             conn: Mutex::new(conn),
         };
@@ -259,7 +269,6 @@ impl Database {
             conn.execute("DELETE FROM settings WHERE key = 'proxy'", [])
                 .map_err(|e| e.to_string())?;
         }
-        // Save auth credentials
         if let Some(ref email) = config.auth_email {
             conn.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
@@ -401,7 +410,6 @@ impl Database {
         Ok(())
     }
 
-    /// Update only the API key in the config (used for auto-refresh after login)
     pub fn update_api_key(&self, new_key: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -476,18 +484,9 @@ impl Database {
                 error, created_at, synced_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, strftime('%s','now'))",
             params![
-                id,
-                app_id,
-                log.id,
-                log.workflow_run.id,
-                log.workflow_run.status,
-                log.workflow_run.elapsed_time,
-                log.workflow_run.total_tokens,
-                log.workflow_run.total_steps,
-                log.created_from,
-                log.created_by_role,
-                end_user_id,
-                end_user_session_id,
+                id, app_id, log.id, log.workflow_run.id, log.workflow_run.status,
+                log.workflow_run.elapsed_time, log.workflow_run.total_tokens, log.workflow_run.total_steps,
+                log.created_from, log.created_by_role, end_user_id, end_user_session_id,
                 json_string(log.workflow_run.error.as_ref().unwrap_or(&serde_json::Value::Null), "null"),
                 log.created_at,
             ],
@@ -500,17 +499,11 @@ impl Database {
     pub fn get_workflow_app_log_count(&self, app_id: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM workflow_app_logs WHERE app_id = ?1",
-                params![app_id],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM workflow_app_logs WHERE app_id = ?1", params![app_id], |row| row.get(0))
             .map_err(|e| e.to_string())?;
         Ok(count)
     }
 
-    /// Get the maximum created_at timestamp among existing workflow app logs.
-    /// Used for incremental sync to know where to stop.
     pub fn get_workflow_app_log_max_created_at(&self, app_id: &str) -> Result<Option<i64>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let result: Option<i64> = conn
@@ -522,21 +515,15 @@ impl Database {
             .optional()
             .map_err(|e| e.to_string())?
             .flatten();
-        // .optional returns Ok(Some(row)) or Ok(None); row.get(0) could be NULL
         Ok(result)
     }
 
-    /// Check if a workflow app log already exists by its log_id
     #[allow(dead_code)]
     pub fn workflow_app_log_exists(&self, app_id: &str, log_id: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let id = format!("{}:{}", app_id, log_id);
         let exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM workflow_app_logs WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) > 0 FROM workflow_app_logs WHERE id = ?1", params![id], |row| row.get(0))
             .map_err(|e| e.to_string())?;
         Ok(exists)
     }
@@ -548,11 +535,7 @@ impl Database {
         for cid in conversation_ids {
             let key = format!("{}:{}", app_id, cid);
             let updated: Option<i64> = conn
-                .query_row(
-                    "SELECT updated_at FROM conversations WHERE id = ?1",
-                    params![key],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT updated_at FROM conversations WHERE id = ?1", params![key], |row| row.get(0))
                 .ok();
             if let Some(ts) = updated {
                 result.insert(cid.clone(), ts);
@@ -573,26 +556,13 @@ impl Database {
                 raw_json, created_at, updated_at, synced_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, strftime('%s','now'))",
             params![
-                id,
-                app_id,
-                conv.id,
-                conv.name,
-                json_string(&conv.inputs, "{}"),
-                conv.status,
-                conv.introduction,
-                conv.summary,
-                conv.from_source,
-                conv.from_end_user_id,
-                conv.from_end_user_session_id,
-                conv.read_at,
-                bool_int(conv.annotated),
-                json_string(&conv.model_config, "{}"),
-                json_string(&conv.user_feedback_stats, "{}"),
-                json_string(&conv.admin_feedback_stats, "{}"),
-                json_string(&conv.status_count, "{}"),
-                json_string(&conv.raw_json, "{}"),
-                conv.created_at,
-                conv.updated_at,
+                id, app_id, conv.id, conv.name,
+                json_string(&conv.inputs, "{}"), conv.status, conv.introduction, conv.summary,
+                conv.from_source, conv.from_end_user_id, conv.from_end_user_session_id,
+                conv.read_at, bool_int(conv.annotated),
+                json_string(&conv.model_config, "{}"), json_string(&conv.user_feedback_stats, "{}"),
+                json_string(&conv.admin_feedback_stats, "{}"), json_string(&conv.status_count, "{}"),
+                json_string(&conv.raw_json, "{}"), conv.created_at, conv.updated_at,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -695,32 +665,15 @@ impl Database {
                 parent_message_id, raw_json, created_at, synced_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, strftime('%s','now'))",
             params![
-                id,
-                app_id,
-                conversation_id,
-                msg.id,
-                msg.query,
-                msg.answer,
-                feedback_rating,
-                json_string(&retriever_resources, "[]"),
-                json_string(&msg.message_metadata, "{}"),
-                json_string(&msg.agent_thoughts, "[]"),
-                msg.answer_tokens,
-                msg.prompt_tokens,
-                msg.elapsed_time,
-                msg.workflow_run_id,
-                json_string(&msg.inputs, "{}"),
-                msg.message_tokens,
-                msg.provider_response_latency,
-                json_string(&msg.feedbacks, "[]"),
-                json_string(&msg.annotation, "null"),
-                json_string(&msg.annotation_hit_history, "null"),
-                json_string(&msg.message_files, "[]"),
-                msg.status,
-                json_string(&msg.error, "null"),
-                msg.parent_message_id,
-                json_string(&msg.raw_json, "{}"),
-                msg.created_at,
+                id, app_id, conversation_id, msg.id, msg.query, msg.answer, feedback_rating,
+                json_string(&retriever_resources, "[]"), json_string(&msg.message_metadata, "{}"),
+                json_string(&msg.agent_thoughts, "[]"), msg.answer_tokens, msg.prompt_tokens,
+                msg.elapsed_time, msg.workflow_run_id, json_string(&msg.inputs, "{}"),
+                msg.message_tokens, msg.provider_response_latency,
+                json_string(&msg.feedbacks, "[]"), json_string(&msg.annotation, "null"),
+                json_string(&msg.annotation_hit_history, "null"), json_string(&msg.message_files, "[]"),
+                msg.status, json_string(&msg.error, "null"), msg.parent_message_id,
+                json_string(&msg.raw_json, "{}"), msg.created_at,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -736,19 +689,9 @@ impl Database {
                 elapsed_time, total_tokens, total_steps, created_at, finished_at, raw_json, synced_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, strftime('%s','now'))",
             params![
-                id,
-                app_id,
-                run.id,
-                run.workflow_id,
-                run.status,
-                run.version,
-                json_string(&run.graph, "{}"),
-                run.elapsed_time,
-                run.total_tokens,
-                run.total_steps,
-                run.created_at,
-                run.finished_at,
-                json_string(&run.raw_json, "{}"),
+                id, app_id, run.id, run.workflow_id, run.status, run.version,
+                json_string(&run.graph, "{}"), run.elapsed_time, run.total_tokens, run.total_steps,
+                run.created_at, run.finished_at, json_string(&run.raw_json, "{}"),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -765,25 +708,11 @@ impl Database {
                 elapsed_time, created_at, finished_at, raw_json, synced_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, strftime('%s','now'))",
             params![
-                id,
-                app_id,
-                workflow_run_id,
-                node.id,
-                node.index,
-                node.node_id,
-                node.node_type,
-                node.title,
-                json_string(&node.inputs, "{}"),
-                json_string(&node.process_data, "{}"),
-                json_string(&node.outputs, "{}"),
-                json_string(&node.execution_metadata, "{}"),
-                json_string(&node.extras, "{}"),
-                node.status,
-                json_string(&node.error, "null"),
-                node.elapsed_time,
-                node.created_at,
-                node.finished_at,
-                json_string(&node.raw_json, "{}"),
+                id, app_id, workflow_run_id, node.id, node.index, node.node_id, node.node_type,
+                node.title, json_string(&node.inputs, "{}"), json_string(&node.process_data, "{}"),
+                json_string(&node.outputs, "{}"), json_string(&node.execution_metadata, "{}"),
+                json_string(&node.extras, "{}"), node.status, json_string(&node.error, "null"),
+                node.elapsed_time, node.created_at, node.finished_at, json_string(&node.raw_json, "{}"),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -1258,7 +1187,6 @@ impl Database {
 
         let where_clause = conditions.join(" AND ");
 
-        // Use a subquery to get one message per workflow_run_id deterministically
         let sql = format!(
             "SELECT ne.execution_id, ne.workflow_run_id, ne.node_id, ne.node_type, ne.title,
                     ne.app_id, m.conversation_id, m.message_id, m.query,
@@ -1318,17 +1246,12 @@ impl Database {
     ) -> Result<DashboardStats, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
-        // Build WHERE clauses
-        // Note: app_id comes from DB-sourced dropdown values, timestamps are i64 - safe from injection
         let msg_where = build_where(app_id, start_time, end_time);
-        // Query-only WHERE: only messages with non-empty query (user questions)
         let msg_where_q = format!("query != '' AND {}", msg_where);
         let conv_where = build_conv_where(app_id, start_time, end_time);
-        // Prefixed message WHERE for queries that alias messages as `m`.
         let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
         let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
 
-        // ── Basic counts ──
         let total_apps: i64 = if let Some(aid) = app_id {
             conn.query_row("SELECT COUNT(*) FROM apps WHERE id = ?1", params![aid], |row| row.get(0)).unwrap_or(1)
         } else {
@@ -1337,52 +1260,38 @@ impl Database {
 
         let total_conversations: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM conversations c WHERE {}", conv_where),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
 
-        // Messages = user messages with non-empty query (user questions only)
         let total_messages: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM messages WHERE {}", msg_where_q),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
 
-        // Users: distinct from_end_user_id from conversations
         let total_users: i64 = conn.query_row(
             &format!(
                 "SELECT COUNT(DISTINCT from_end_user_id) FROM conversations c WHERE from_end_user_id != '' AND {}",
                 conv_where
             ),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
 
-        // ── Token totals ──
         let total_answer_tokens: i64 = conn.query_row(
             &format!("SELECT COALESCE(SUM(answer_tokens), 0) FROM messages WHERE {}", msg_where_q),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let total_prompt_tokens: i64 = conn.query_row(
             &format!("SELECT COALESCE(SUM(prompt_tokens), 0) FROM messages WHERE {}", msg_where_q),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
-        // Message-level effective tokens:
-        // - Prefer message_tokens when available
-        // - Fallback to prompt + answer for historical records without message_tokens
         let message_effective_tokens: i64 = conn.query_row(
             &format!(
                 "SELECT COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) FROM messages WHERE {}",
                 msg_where_q
             ),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
 
-        // Workflow supplement (non-duplicating):
-        // build run scope from the same filtered message set, then add only run-level remainder.
         let workflow_supplement_tokens: i64 = conn.query_row(
             &format!(
                 "WITH workflow_run_scope AS (
@@ -1405,13 +1314,11 @@ impl Database {
                 FROM workflow_run_scope",
                 msg_where_m_q
             ),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
 
         let total_tokens = message_effective_tokens + workflow_supplement_tokens;
 
-        // ── Average distributions ──
         let messages_per_conversation_distribution = compute_distribution(
             &conn,
             &format!(
@@ -1450,26 +1357,21 @@ impl Database {
             ),
         )?;
 
-        // ── Feedback counts ──
         let feedback_like: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM messages WHERE feedback = 'like' AND {}", msg_where_q),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let feedback_dislike: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM messages WHERE feedback = 'dislike' AND {}", msg_where_q),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let feedback_none: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM messages WHERE feedback IS NULL AND {}", msg_where_q),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let feedback_total = feedback_like + feedback_dislike;
         let feedback_like_rate = if feedback_total > 0 { feedback_like as f64 / feedback_total as f64 * 100.0 } else { 0.0 };
 
-        // Feedback with content: feedbacks JSON array has at least one item with non-empty label/rating or content/message
         let feedback_with_content: i64 = conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM messages WHERE feedback IS NOT NULL AND EXISTS (
@@ -1479,40 +1381,32 @@ impl Database {
                 ) AND {}",
                 msg_where_q
             ),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string()).unwrap_or(0);
 
         let avg_feedback_per_user = if total_users > 0 { feedback_total as f64 / total_users as f64 } else { 0.0 };
         let avg_feedback_per_conversation = if total_conversations > 0 { feedback_total as f64 / total_conversations as f64 } else { 0.0 };
         let avg_feedback_per_message = if total_messages > 0 { feedback_total as f64 / total_messages as f64 } else { 0.0 };
 
-        // ── Error stats ──
         let error_count: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM messages WHERE ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') AND {}", msg_where_q),
-            [],
-            |row| row.get(0),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let error_rate = if total_messages > 0 { error_count as f64 / total_messages as f64 * 100.0 } else { 0.0 };
 
-        // ── Dify-aligned metrics ──
         let satisfaction_rate = if total_messages > 0 { feedback_like as f64 / total_messages as f64 * 1000.0 } else { 0.0 };
         let avg_conversation_interactions = if total_conversations > 0 { total_messages as f64 / total_conversations as f64 } else { 0.0 };
 
-        // ── Distributions ──
-        // TTFT (provider_response_latency)
         let ttft_distribution = compute_distribution(
             &conn,
             &format!("SELECT provider_response_latency FROM messages WHERE provider_response_latency > 0 AND {}", msg_where_q),
         )?;
 
-        // Elapsed time
         let elapsed_time_distribution = compute_distribution(
             &conn,
             &format!("SELECT elapsed_time FROM messages WHERE elapsed_time > 0 AND {}", msg_where_q),
         )?;
 
-        // Tokens per message
         let token_per_message_distribution = compute_distribution(
             &conn,
             &format!(
@@ -1521,13 +1415,11 @@ impl Database {
             ),
         )?;
 
-        // Token speed (tokens/s) = answer_tokens / elapsed_time
         let token_speed_distribution = compute_distribution(
             &conn,
             &format!("SELECT CAST(answer_tokens AS REAL) / elapsed_time FROM messages WHERE elapsed_time > 0 AND answer_tokens > 0 AND {}", msg_where_q),
         )?;
 
-        // User feedback count distribution
         let user_feedback_count_distribution = compute_distribution(
             &conn,
             &format!(
@@ -1542,7 +1434,6 @@ impl Database {
             ),
         )?;
 
-        // Conversation feedback count distribution
         let conversation_feedback_count_distribution = compute_distribution(
             &conn,
             &format!(
@@ -1557,7 +1448,6 @@ impl Database {
             ),
         )?;
 
-        // Message feedback count distribution (feedbacks array length per message with feedback)
         let message_feedback_count_distribution = compute_distribution(
             &conn,
             &format!(
@@ -1566,7 +1456,6 @@ impl Database {
             ),
         )?;
 
-        // ── Feedback label stats ──
         let feedback_label_sql = format!(
             "SELECT COALESCE(feedback, 'none') as fb_label, COUNT(*) as cnt FROM messages WHERE {} GROUP BY fb_label ORDER BY cnt DESC",
             msg_where_q
@@ -1581,7 +1470,6 @@ impl Database {
         .filter_map(|r| r.ok())
         .collect();
 
-        // ── Top apps ──
         let top_apps_sql = format!(
             "SELECT c.app_id, a.name, COUNT(DISTINCT c.conversation_id) as conv_count, COUNT(m.id) as msg_count
              FROM conversations c
@@ -1605,10 +1493,6 @@ impl Database {
         .filter_map(|r| r.ok())
         .collect();
 
-        // ── Daily trend ──
-        // (msg_where_m and msg_where_m_q already defined above for user messages distribution)
-
-        // For daily users, join messages with conversations (only query messages)
         let daily_users_sql = format!(
             "SELECT date(m.created_at, 'unixepoch', 'localtime') as day,
                     COUNT(DISTINCT c.from_end_user_id) as user_count
@@ -1618,7 +1502,6 @@ impl Database {
              GROUP BY day",
             msg_where_m_q
         );
-        // Build a map of date -> user count
         let mut daily_users_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         if let Ok(mut stmt) = conn.prepare(&daily_users_sql) {
             let _ = stmt.query_map([], |row| {
@@ -1719,14 +1602,12 @@ impl Database {
         .filter_map(|r| r.ok())
         .collect();
 
-        // Keep denominator aligned with the merged daily timeline when no full explicit range is provided.
         let days_in_range = if let (Some(s), Some(e)) = (start_time, end_time) {
             (((e - s) as f64 / 86400.0).floor() + 1.0).max(1.0)
         } else if let Some(s) = start_time {
             let now_ts: i64 = conn.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
             (((now_ts - s) as f64 / 86400.0).floor() + 1.0).max(1.0)
         } else if recent_daily.len() >= 2 {
-            // Use SQL julianday to compute calendar span from the daily results
             let first = &recent_daily.first().unwrap().date;
             let last = &recent_daily.last().unwrap().date;
             let span: i64 = conn.query_row(
@@ -1740,8 +1621,6 @@ impl Database {
         };
         let daily_avg_tokens = total_tokens as f64 / days_in_range;
 
-        // ── Per-model token speed daily trend ──
-        // Extract model from message_metadata JSON field and group by model + date
         let model_speed_sql = format!(
             "SELECT
                 COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
@@ -1764,7 +1643,6 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
-        // ── Per-model aggregated performance stats ──
         let model_perf_sql = format!(
             "SELECT
                 COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
@@ -1796,7 +1674,6 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
-        // ── Per-node-type aggregated performance stats ──
         let node_where = build_where_prefixed("ne.", app_id, start_time, end_time);
         let node_perf_sql = format!(
             "SELECT
@@ -1867,6 +1744,207 @@ impl Database {
             node_performance,
         })
     }
+
+    // ===== Batch Upsert (for sync performance) =====
+    pub fn batch_upsert_conversations(&self, app_id: &str, convs: &[DifyConversationItem]) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+        let mut count = 0usize;
+        for conv in convs {
+            let id = format!("{}:{}", app_id, conv.id);
+            let r = conn.execute(
+                "INSERT OR REPLACE INTO conversations (
+                    id, app_id, conversation_id, name, inputs, status, introduction, summary,
+                    from_source, from_end_user_id, from_end_user_session_id, read_at, annotated,
+                    model_config, user_feedback_stats, admin_feedback_stats, status_count,
+                    raw_json, created_at, updated_at, synced_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, strftime('%s','now'))",
+                params![
+                    id, app_id, conv.id, conv.name,
+                    json_string(&conv.inputs, "{}"), conv.status, conv.introduction, conv.summary,
+                    conv.from_source, conv.from_end_user_id, conv.from_end_user_session_id,
+                    conv.read_at, bool_int(conv.annotated),
+                    json_string(&conv.model_config, "{}"), json_string(&conv.user_feedback_stats, "{}"),
+                    json_string(&conv.admin_feedback_stats, "{}"), json_string(&conv.status_count, "{}"),
+                    json_string(&conv.raw_json, "{}"), conv.created_at, conv.updated_at,
+                ],
+            );
+            match r { Ok(_) => count += 1, Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); } }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(count)
+    }
+
+    pub fn batch_upsert_workflow_app_logs(&self, app_id: &str, logs: &[DifyWorkflowAppLogItem]) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+        let mut count = 0usize;
+        for log in logs {
+            let id = format!("{}:{}", app_id, log.id);
+            let end_user_id = log.created_by_end_user.as_ref().map(|u| u.id.clone()).unwrap_or_default();
+            let end_user_session_id = log.created_by_end_user.as_ref().map(|u| u.session_id.clone()).unwrap_or_default();
+            let r = conn.execute(
+                "INSERT OR REPLACE INTO workflow_app_logs (
+                    id, app_id, log_id, workflow_run_id, status, elapsed_time, total_tokens, total_steps,
+                    created_from, created_by_role, created_by_end_user_id, created_by_end_user_session_id,
+                    error, created_at, synced_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, strftime('%s','now'))",
+                params![
+                    id, app_id, log.id, log.workflow_run.id, log.workflow_run.status,
+                    log.workflow_run.elapsed_time, log.workflow_run.total_tokens, log.workflow_run.total_steps,
+                    log.created_from, log.created_by_role, end_user_id, end_user_session_id,
+                    json_string(log.workflow_run.error.as_ref().unwrap_or(&serde_json::Value::Null), "null"),
+                    log.created_at,
+                ],
+            );
+            match r { Ok(_) => count += 1, Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); } }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(count)
+    }
+
+    pub fn batch_upsert_workflow_runs(&self, app_id: &str, runs: &[DifyWorkflowRun]) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+        let mut count = 0usize;
+        for run in runs {
+            let id = format!("{}:{}", app_id, run.id);
+            let r = conn.execute(
+                "INSERT OR REPLACE INTO workflow_runs (
+                    id, app_id, workflow_run_id, workflow_id, status, version, graph,
+                    elapsed_time, total_tokens, total_steps, created_at, finished_at, raw_json, synced_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, strftime('%s','now'))",
+                params![
+                    id, app_id, run.id, run.workflow_id, run.status, run.version,
+                    json_string(&run.graph, "{}"), run.elapsed_time, run.total_tokens, run.total_steps,
+                    run.created_at, run.finished_at, json_string(&run.raw_json, "{}"),
+                ],
+            );
+            match r { Ok(_) => count += 1, Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); } }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(count)
+    }
+
+    pub fn batch_upsert_node_executions(&self, app_id: &str, workflow_run_id: &str, nodes: &[DifyNodeExecution]) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+        let mut count = 0usize;
+        for node in nodes {
+            let id = format!("{}:{}", app_id, node.id);
+            let r = conn.execute(
+                "INSERT OR REPLACE INTO node_executions (
+                    id, app_id, workflow_run_id, execution_id, execution_index, node_id, node_type,
+                    title, inputs, process_data, outputs, execution_metadata, extras, status, error,
+                    elapsed_time, created_at, finished_at, raw_json, synced_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, strftime('%s','now'))",
+                params![
+                    id, app_id, workflow_run_id, node.id, node.index, node.node_id, node.node_type,
+                    node.title, json_string(&node.inputs, "{}"), json_string(&node.process_data, "{}"),
+                    json_string(&node.outputs, "{}"), json_string(&node.execution_metadata, "{}"),
+                    json_string(&node.extras, "{}"), node.status, json_string(&node.error, "null"),
+                    node.elapsed_time, node.created_at, node.finished_at, json_string(&node.raw_json, "{}"),
+                ],
+            );
+            match r { Ok(_) => count += 1, Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); } }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(count)
+    }
+
+    pub fn batch_upsert_messages(&self, app_id: &str, conversation_id: &str, msgs: &[DifyMessageItem]) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+        let mut count = 0usize;
+        for msg in msgs {
+            let id = format!("{}:{}", app_id, msg.id);
+            let feedback_rating = msg.feedback.as_ref().map(|f| f.rating.clone())
+                .or_else(|| feedback_rating_from_array(&msg.feedbacks));
+            let mut retriever_resources = msg.retriever_resources.clone();
+            if retriever_resources.as_array().map(|items| items.is_empty()).unwrap_or(true) {
+                if let Some(metadata_resources) = msg.message_metadata.get("retriever_resources") {
+                    retriever_resources = metadata_resources.clone();
+                }
+            }
+            let r = conn.execute(
+                "INSERT OR REPLACE INTO messages (
+                    id, app_id, conversation_id, message_id, query, answer, feedback,
+                    retriever_resources, message_metadata, agent_thoughts, answer_tokens, prompt_tokens,
+                    elapsed_time, workflow_run_id, inputs, message_tokens, provider_response_latency,
+                    feedbacks, annotation, annotation_hit_history, message_files, status, error,
+                    parent_message_id, raw_json, created_at, synced_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, strftime('%s','now'))",
+                params![
+                    id, app_id, conversation_id, msg.id, msg.query, msg.answer, feedback_rating,
+                    json_string(&retriever_resources, "[]"), json_string(&msg.message_metadata, "{}"),
+                    json_string(&msg.agent_thoughts, "[]"), msg.answer_tokens, msg.prompt_tokens,
+                    msg.elapsed_time, msg.workflow_run_id, json_string(&msg.inputs, "{}"),
+                    msg.message_tokens, msg.provider_response_latency,
+                    json_string(&msg.feedbacks, "[]"), json_string(&msg.annotation, "null"),
+                    json_string(&msg.annotation_hit_history, "null"), json_string(&msg.message_files, "[]"),
+                    msg.status, json_string(&msg.error, "null"), msg.parent_message_id,
+                    json_string(&msg.raw_json, "{}"), msg.created_at,
+                ],
+            );
+            match r { Ok(_) => count += 1, Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); } }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(count)
+    }
+
+    // ===== Database Maintenance =====
+    pub fn cleanup_raw_json(&self) -> Result<u64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+        let tables = ["conversations", "messages", "workflow_runs", "node_executions"];
+        let mut total_bytes: u64 = 0;
+        for table in &tables {
+            let size_before: i64 = conn.query_row(
+                &format!("SELECT COALESCE(SUM(LENGTH(raw_json)), 0) FROM {} WHERE raw_json IS NOT NULL AND raw_json != '' AND raw_json != '{{}}'", table),
+                [], |row| row.get(0),
+            ).unwrap_or(0);
+            total_bytes += size_before as u64;
+            conn.execute(&format!("UPDATE {} SET raw_json = '{{}}' WHERE raw_json IS NOT NULL AND raw_json != '{{}}'", table), [])
+                .map_err(|e| e.to_string())?;
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(total_bytes)
+    }
+
+    pub fn vacuum(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch("VACUUM").map_err(|e| format!("VACUUM 失败: {}", e))?;
+        Ok(())
+    }
+
+    pub fn get_db_size_info(&self) -> Result<DbSizeInfo, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0)).unwrap_or(0);
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0)).unwrap_or(4096);
+        let total_size = page_count * page_size;
+        let raw_json_bytes: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(LENGTH(raw_json)), 0) FROM (
+                SELECT raw_json FROM conversations WHERE raw_json IS NOT NULL AND raw_json != '' AND raw_json != '{}'
+                UNION ALL SELECT raw_json FROM messages WHERE raw_json IS NOT NULL AND raw_json != '' AND raw_json != '{}'
+                UNION ALL SELECT raw_json FROM workflow_runs WHERE raw_json IS NOT NULL AND raw_json != '' AND raw_json != '{}'
+                UNION ALL SELECT raw_json FROM node_executions WHERE raw_json IS NOT NULL AND raw_json != '' AND raw_json != '{}'
+            )", [], |row| row.get(0),
+        ).unwrap_or(0);
+        let conversation_count: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0)).unwrap_or(0);
+        let message_count: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0)).unwrap_or(0);
+        let workflow_run_count: i64 = conn.query_row("SELECT COUNT(*) FROM workflow_runs", [], |row| row.get(0)).unwrap_or(0);
+        let node_execution_count: i64 = conn.query_row("SELECT COUNT(*) FROM node_executions", [], |row| row.get(0)).unwrap_or(0);
+        let workflow_app_log_count: i64 = conn.query_row("SELECT COUNT(*) FROM workflow_app_logs", [], |row| row.get(0)).unwrap_or(0);
+        Ok(DbSizeInfo {
+            total_bytes: total_size,
+            raw_json_bytes,
+            conversation_count,
+            message_count,
+            workflow_run_count,
+            node_execution_count,
+            workflow_app_log_count,
+        })
+    }
 }
 
 fn build_where(app_id: Option<&str>, start_time: Option<i64>, end_time: Option<i64>) -> String {
@@ -1891,48 +1969,37 @@ fn build_where_prefixed(prefix: &str, app_id: Option<&str>, start_time: Option<i
     conditions.join(" AND ")
 }
 
-fn compute_distribution(conn: &Connection, sql: &str) -> Result<Option<StatDistribution>, String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let values: Vec<f64> = stmt
-        .query_map([], |row| row.get::<_, f64>(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+fn compute_distribution(conn: &Connection, inner_sql: &str) -> Result<Option<StatDistribution>, String> {
+    // Use SQL-native aggregation with CTE to avoid loading all values into memory.
+    // CTE raw(val) renames the single column from inner_sql to "val" uniformly.
+    let stats_sql = format!(
+        "WITH raw(val) AS ({})
+         SELECT COUNT(*) as cnt,
+                COALESCE(MIN(val), 0) as min_val,
+                COALESCE(MAX(val), 0) as max_val,
+                COALESCE(AVG(val), 0) as avg_val,
+                COALESCE((SELECT val FROM raw ORDER BY val LIMIT 1 OFFSET (SELECT CASE WHEN COUNT(*)=0 THEN 0 ELSE CAST(COUNT(*)*50/100 AS INTEGER) END FROM raw)), 0) as p50_val,
+                COALESCE((SELECT val FROM raw ORDER BY val LIMIT 1 OFFSET (SELECT CASE WHEN COUNT(*)=0 THEN 0 ELSE CAST(COUNT(*)*80/100 AS INTEGER) END FROM raw)), 0) as p80_val,
+                COALESCE((SELECT val FROM raw ORDER BY val LIMIT 1 OFFSET (SELECT CASE WHEN COUNT(*)=0 THEN 0 ELSE CAST(COUNT(*)*95/100 AS INTEGER) END FROM raw)), 0) as p95_val
+         FROM raw",
+        inner_sql
+    );
 
-    if values.is_empty() {
-        return Ok(None);
-    }
-
-    let count = values.len() as i64;
-    let mut sorted = values;
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-    let min = sorted[0];
-    let max = sorted[sorted.len() - 1];
-    let sum: f64 = sorted.iter().sum();
-    let avg = sum / count as f64;
-
-    let p50 = percentile(&sorted, 50.0);
-    let p80 = percentile(&sorted, 80.0);
-    let p95 = percentile(&sorted, 95.0);
-
-    Ok(Some(StatDistribution {
-        min,
-        max,
-        avg,
-        p50,
-        p80,
-        p95,
-        count,
-    }))
-}
-
-fn percentile(sorted: &[f64], p: f64) -> f64 {
-    if sorted.is_empty() {
-        return 0.0;
-    }
-    let idx = (p / 100.0 * (sorted.len() - 1) as f64) as usize;
-    sorted[idx.min(sorted.len() - 1)]
+    conn.query_row(&stats_sql, [], |row| {
+        let count: i64 = row.get(0)?;
+        if count == 0 {
+            return Ok(None);
+        }
+        Ok(Some(StatDistribution {
+            min: row.get(1)?,
+            max: row.get(2)?,
+            avg: row.get(3)?,
+            p50: row.get(4)?,
+            p80: row.get(5)?,
+            p95: row.get(6)?,
+            count,
+        }))
+    }).map_err(|e| e.to_string())
 }
 
 fn feedback_rating_from_array(feedbacks: &serde_json::Value) -> Option<String> {

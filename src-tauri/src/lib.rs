@@ -245,6 +245,7 @@ async fn sync_workflow_app(
     let mut synced_node_executions: i64 = 0;
     let mut failed_details: i64 = 0;
     let mut fetched_workflow_runs: HashSet<String> = HashSet::new();
+    let mut workflow_tasks: Vec<tokio::task::JoinHandle<(String, Result<DifyWorkflowRun, String>, Result<Vec<DifyNodeExecution>, String>)>> = Vec::new();
     let mut page: i64 = 1;
     let limit: i64 = 100;
 
@@ -259,26 +260,17 @@ async fn sync_workflow_app(
         let logs_resp = client.fetch_workflow_app_logs(app_id, page, limit).await?;
         total_messages += logs_resp.data.len() as i64;
 
+        let mut early_stop = false;
         for log_item in &logs_resp.data {
             // In incremental mode, stop when we reach data older than our latest local record.
             // Use < (strict less-than) to re-process any logs at the same timestamp boundary,
             // ensuring we don't miss logs that share the same created_at second.
+            // Note: use break (not return) to ensure spawned workflow_tasks are flushed below.
             if is_incremental {
                 if let Some(max_ts) = max_local_created_at {
                     if log_item.created_at < max_ts {
-                        // Reached previously synced data; stop
-                        return Ok(SyncResult {
-                            total_conversations,
-                            synced_conversations,
-                            total_messages,
-                            synced_messages,
-                            synced_workflow_runs,
-                            synced_node_executions,
-                            failed_details,
-                            new_conversations: 0,
-                            updated_conversations: 0,
-                            skipped_conversations: 0,
-                        });
+                        early_stop = true;
+                        break;
                     }
                 }
             }
@@ -362,36 +354,47 @@ async fn sync_workflow_app(
             if !run_id.is_empty() {
                 let cache_key = format!("{}:{}", app_id, run_id);
                 if fetched_workflow_runs.insert(cache_key) {
-                    match client.fetch_workflow_run(app_id, run_id).await {
-                        Ok(run) => {
-                            state.db.upsert_workflow_run(app_id, &run)?;
-                            synced_workflow_runs += 1;
-                        }
-                        Err(_) => {
-                            failed_details += 1;
-                        }
-                    }
-
-                    match client.fetch_node_executions(app_id, run_id).await {
-                        Ok(nodes) => {
-                            for node in &nodes {
-                                state.db.upsert_node_execution(app_id, run_id, node)?;
-                                synced_node_executions += 1;
-                            }
-                        }
-                        Err(_) => {
-                            failed_details += 1;
-                        }
-                    }
+                    let rid = run_id.clone();
+                    let aid = app_id.to_string();
+                    let c = client.clone();
+                    let handle = tokio::spawn(async move {
+                        let run_result = c.fetch_workflow_run(&aid, &rid).await;
+                        let nodes_result = c.fetch_node_executions(&aid, &rid).await;
+                        (rid, run_result, nodes_result)
+                    });
+                    workflow_tasks.push(handle);
                 }
             }
         }
 
-        if logs_resp.has_more {
-            page += 1;
-        } else {
+        // Flush pending workflow tasks at end of each page
+        for task in workflow_tasks.drain(..) {
+            if let Ok((run_id, run_result, nodes_result)) = task.await {
+                if let Ok(run) = run_result {
+                    match state.db.upsert_workflow_run(app_id, &run) {
+                        Ok(_) => synced_workflow_runs += 1,
+                        Err(_) => failed_details += 1,
+                    }
+                } else {
+                    failed_details += 1;
+                }
+                if let Ok(nodes) = nodes_result {
+                    if !nodes.is_empty() {
+                        match state.db.batch_upsert_node_executions(app_id, &run_id, &nodes) {
+                            Ok(count) => synced_node_executions += count as i64,
+                            Err(_) => failed_details += 1,
+                        }
+                    }
+                } else {
+                    failed_details += 1;
+                }
+            }
+        }
+
+        if early_stop || !logs_resp.has_more {
             break;
         }
+        page += 1;
     }
 
     Ok(SyncResult {
@@ -474,33 +477,59 @@ async fn sync_chat_app(
             let messages = client.fetch_messages(app_id, &conv.id, 100).await?;
             total_messages += messages.len() as i64;
 
-            for msg in &messages {
-                state.db.upsert_message(app_id, &conv.id, msg)?;
-                synced_messages += 1;
-
-                if let Some(run_id) = msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()) {
-                    let cache_key = format!("{}:{}", app_id, run_id);
-                    if fetched_workflow_runs.insert(cache_key) {
-                        match client.fetch_workflow_run(app_id, run_id).await {
-                            Ok(run) => {
-                                state.db.upsert_workflow_run(app_id, &run)?;
-                                synced_workflow_runs += 1;
-                            }
-                            Err(_) => {
-                                failed_details += 1;
+            // Batch insert messages in a single transaction
+            if !messages.is_empty() {
+                match state.db.batch_upsert_messages(app_id, &conv.id, &messages) {
+                    Ok(count) => synced_messages += count as i64,
+                    Err(_) => {
+                        for msg in &messages {
+                            match state.db.upsert_message(app_id, &conv.id, msg) {
+                                Ok(_) => synced_messages += 1,
+                                Err(_) => failed_details += 1,
                             }
                         }
+                    }
+                }
+            }
 
-                        match client.fetch_node_executions(app_id, run_id).await {
-                            Ok(nodes) => {
-                                for node in &nodes {
-                                    state.db.upsert_node_execution(app_id, run_id, node)?;
-                                    synced_node_executions += 1;
+            // Collect unique workflow run IDs to fetch in parallel
+            let run_ids: Vec<String> = messages.iter()
+                .filter_map(|msg| msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()).map(|id| id.to_string()))
+                .filter(|run_id| fetched_workflow_runs.insert(format!("{}:{}", app_id, run_id)))
+                .collect();
+
+            // Fetch workflow runs and node executions in parallel (batches of 4)
+            for run_id_chunk in run_ids.chunks(4) {
+                let mut tasks = Vec::new();
+                for run_id in run_id_chunk {
+                    let client = client.clone();
+                    let app_id = app_id.to_string();
+                    let run_id = run_id.clone();
+                    tasks.push(tokio::spawn(async move {
+                        let run_result = client.fetch_workflow_run(&app_id, &run_id).await;
+                        let nodes_result = client.fetch_node_executions(&app_id, &run_id).await;
+                        (run_id, run_result, nodes_result)
+                    }));
+                }
+                for task in tasks {
+                    if let Ok((run_id, run_result, nodes_result)) = task.await {
+                        if let Ok(run) = run_result {
+                            match state.db.upsert_workflow_run(app_id, &run) {
+                                Ok(_) => synced_workflow_runs += 1,
+                                Err(_) => failed_details += 1,
+                            }
+                        } else {
+                            failed_details += 1;
+                        }
+                        if let Ok(nodes) = nodes_result {
+                            if !nodes.is_empty() {
+                                match state.db.batch_upsert_node_executions(app_id, &run_id, &nodes) {
+                                    Ok(count) => synced_node_executions += count as i64,
+                                    Err(_) => failed_details += 1,
                                 }
                             }
-                            Err(_) => {
-                                failed_details += 1;
-                            }
+                        } else {
+                            failed_details += 1;
                         }
                     }
                 }
@@ -788,6 +817,31 @@ fn export_dashboard_excel(
 }
 
 #[tauri::command]
+fn get_db_size_info(state: State<AppState>) -> Result<DbSizeInfo, String> {
+    state.db.get_db_size_info()
+}
+
+#[tauri::command]
+fn cleanup_raw_json(state: State<AppState>) -> Result<String, String> {
+    let bytes = state.db.cleanup_raw_json()?;
+    Ok(format!("已清理 raw_json，释放约 {} 字节 ({:.2} MB)", bytes, bytes as f64 / 1_048_576.0))
+}
+
+#[tauri::command]
+fn vacuum_database(state: State<AppState>) -> Result<String, String> {
+    let info_before = state.db.get_db_size_info()?;
+    state.db.vacuum()?;
+    let info_after = state.db.get_db_size_info()?;
+    let freed = info_before.total_bytes - info_after.total_bytes;
+    Ok(format!(
+        "VACUUM 完成！数据库从 {:.2} MB 压缩到 {:.2} MB，释放 {:.2} MB",
+        info_before.total_bytes as f64 / 1_048_576.0,
+        info_after.total_bytes as f64 / 1_048_576.0,
+        freed as f64 / 1_048_576.0,
+    ))
+}
+
+#[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -824,6 +878,9 @@ pub fn run() {
             save_auto_sync_settings,
             sync_all_apps,
             export_dashboard_excel,
+            get_db_size_info,
+            cleanup_raw_json,
+            vacuum_database,
             get_app_version,
         ])
         .run(tauri::generate_context!())

@@ -5,6 +5,7 @@ use serde::de::DeserializeOwned;
 
 use crate::models::*;
 
+#[derive(Clone)]
 pub struct DifyApiClient {
     client: Client,
     api_base: String,

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Settings, CheckCircle, XCircle, Loader2, LogIn, Key } from 'lucide-react';
+import { Settings, CheckCircle, XCircle, Loader2, LogIn, Key, Database, HardDrive, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import type { DbSizeInfo } from '../types';
 
 type AuthMode = 'login' | 'token';
 
@@ -17,10 +18,49 @@ export function ConfigPage() {
   const [testMessage, setTestMessage] = useState('');
   const [saved, setSaved] = useState(false);
   const [hasExistingKey, setHasExistingKey] = useState(false);
+  const [dbSizeInfo, setDbSizeInfo] = useState<DbSizeInfo | null>(null);
+  const [dbLoading, setDbLoading] = useState(false);
+  const [dbMessage, setDbMessage] = useState('');
 
   useEffect(() => {
     loadConfig();
+    loadDbSize();
   }, []);
+
+  const loadDbSize = async () => {
+    try {
+      const info = await invoke<DbSizeInfo>('get_db_size_info');
+      setDbSizeInfo(info);
+    } catch (_) {}
+  };
+
+  const handleCleanupRawJson = async () => {
+    setDbLoading(true);
+    setDbMessage('');
+    try {
+      const msg = await invoke<string>('cleanup_raw_json');
+      setDbMessage(msg);
+      await loadDbSize();
+    } catch (e: any) {
+      setDbMessage(`清理失败: ${e}`);
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
+  const handleVacuum = async () => {
+    setDbLoading(true);
+    setDbMessage('');
+    try {
+      const msg = await invoke<string>('vacuum_database');
+      setDbMessage(msg);
+      await loadDbSize();
+    } catch (e: any) {
+      setDbMessage(`压缩失败: ${e}`);
+    } finally {
+      setDbLoading(false);
+    }
+  };
 
   const loadConfig = async () => {
     try {
@@ -405,6 +445,106 @@ export function ConfigPage() {
               测试连接
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Database Maintenance */}
+      <div className="mt-6">
+        <div className="mb-4">
+          <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+            <Database size={20} />
+            数据库管理
+          </h2>
+          <p className="text-gray-500 mt-1 text-sm">查看数据库大小并进行清理和压缩</p>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+          {dbSizeInfo && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="bg-gray-50 rounded-lg p-3 text-center">
+                <HardDrive size={18} className="mx-auto text-gray-400 mb-1" />
+                <div className="text-lg font-semibold text-gray-900">
+                  {(dbSizeInfo.total_bytes / 1_048_576).toFixed(1)} MB
+                </div>
+                <div className="text-xs text-gray-500">数据库大小</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3 text-center">
+                <Trash2 size={18} className="mx-auto text-gray-400 mb-1" />
+                <div className="text-lg font-semibold text-gray-900">
+                  {(dbSizeInfo.raw_json_bytes / 1_048_576).toFixed(1)} MB
+                </div>
+                <div className="text-xs text-gray-500">Raw JSON</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3 text-center">
+                <div className="text-lg font-semibold text-gray-900">
+                  {dbSizeInfo.conversation_count.toLocaleString()}
+                </div>
+                <div className="text-xs text-gray-500">会话数</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3 text-center">
+                <div className="text-lg font-semibold text-gray-900">
+                  {dbSizeInfo.message_count.toLocaleString()}
+                </div>
+                <div className="text-xs text-gray-500">消息数</div>
+              </div>
+            </div>
+          )}
+
+          {dbSizeInfo && (
+            <div className="grid grid-cols-3 gap-4">
+              <div className="bg-gray-50 rounded-lg p-2 text-center">
+                <span className="text-sm font-medium text-gray-700">
+                  {dbSizeInfo.workflow_run_count.toLocaleString()}
+                </span>
+                <span className="text-xs text-gray-500 ml-1">Workflow Runs</span>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2 text-center">
+                <span className="text-sm font-medium text-gray-700">
+                  {dbSizeInfo.node_execution_count.toLocaleString()}
+                </span>
+                <span className="text-xs text-gray-500 ml-1">Node Executions</span>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2 text-center">
+                <span className="text-sm font-medium text-gray-700">
+                  {dbSizeInfo.workflow_app_log_count.toLocaleString()}
+                </span>
+                <span className="text-xs text-gray-500 ml-1">Workflow Logs</span>
+              </div>
+            </div>
+          )}
+
+          {dbMessage && (
+            <div className="flex items-center gap-2 px-4 py-3 rounded-lg text-sm bg-blue-50 text-blue-700 border border-blue-200">
+              <CheckCircle size={16} />
+              {dbMessage}
+            </div>
+          )}
+
+          <div className="flex gap-3">
+            <button
+              onClick={handleCleanupRawJson}
+              disabled={dbLoading}
+              className="px-4 py-2 bg-amber-50 text-amber-700 text-sm font-medium rounded-lg border border-amber-200 hover:bg-amber-100 transition-colors disabled:opacity-50 flex items-center gap-2"
+            >
+              {dbLoading && <Loader2 size={14} className="animate-spin" />}
+              <Trash2 size={14} />
+              清理 Raw JSON
+            </button>
+            <button
+              onClick={handleVacuum}
+              disabled={dbLoading}
+              className="px-4 py-2 bg-purple-50 text-purple-700 text-sm font-medium rounded-lg border border-purple-200 hover:bg-purple-100 transition-colors disabled:opacity-50 flex items-center gap-2"
+            >
+              {dbLoading && <Loader2 size={14} className="animate-spin" />}
+              <HardDrive size={14} />
+              压缩数据库
+            </button>
+          </div>
+
+          <p className="text-xs text-gray-400">
+            「清理 Raw JSON」会删除数据库中存储的原始 API 响应数据（不影响已解析的统计数据）。
+            「压缩数据库」会执行 VACUUM 操作回收磁盘空间。建议先清理再压缩。
+          </p>
         </div>
       </div>
     </div>

@@ -283,3 +283,14 @@ export interface FeedbackResult {
   data: FeedbackMessage[];
   total: number;
 }
+
+// ===== Database Maintenance =====
+export interface DbSizeInfo {
+  total_bytes: number;
+  raw_json_bytes: number;
+  conversation_count: number;
+  message_count: number;
+  workflow_run_count: number;
+  node_execution_count: number;
+  workflow_app_log_count: number;
+}
