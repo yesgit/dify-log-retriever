@@ -66,7 +66,7 @@ const TIME_PRESETS: TimePreset[] = [
 
 export function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [apps, setApps] = useState<DifyApp[]>([]);
   const [selectedAppId, setSelectedAppId] = useState<string>('');
   const [selectedPresetIdx, setSelectedPresetIdx] = useState<number>(3);
@@ -78,7 +78,9 @@ export function DashboardPage() {
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [exportMsgIsError, setExportMsgIsError] = useState(false);
   const [exportFilePath, setExportFilePath] = useState<string | null>(null);
+  const [hasQueried, setHasQueried] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef(false);
 
   useEffect(() => { loadApps(); }, []);
 
@@ -109,7 +111,9 @@ export function DashboardPage() {
   }, [useCustom, customStart, customEnd, selectedPresetIdx]);
 
   const loadStats = useCallback(async () => {
+    cancelRef.current = false;
     setLoading(true);
+    setHasQueried(true);
     try {
       const { startTime, endTime } = getTimeRange();
       const result = await invoke<DashboardStats>('get_dashboard_stats', {
@@ -117,11 +121,24 @@ export function DashboardPage() {
         startTime,
         endTime,
       });
-      setStats(result);
-    } catch (e) { console.error(e); } finally { setLoading(false); }
+      if (!cancelRef.current) {
+        setStats(result);
+      }
+    } catch (e) {
+      if (!cancelRef.current) {
+        console.error(e);
+      }
+    } finally {
+      if (!cancelRef.current) {
+        setLoading(false);
+      }
+    }
   }, [selectedAppId, getTimeRange]);
 
-  useEffect(() => { loadStats(); }, [loadStats]);
+  const cancelQuery = useCallback(() => {
+    cancelRef.current = true;
+    setLoading(false);
+  }, []);
 
   const handleExportExcel = async () => {
     setExportingExcel(true);
@@ -210,14 +227,6 @@ export function DashboardPage() {
 
   const formatPercent = (n: number) => `${n.toFixed(1)}%`;
 
-  if (loading && !stats) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
-      </div>
-    );
-  }
-
   return (
     <div>
       {/* Header with filters */}
@@ -231,12 +240,6 @@ export function DashboardPage() {
             <p className="text-gray-500 mt-1">数据统计概览</p>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={loadStats}
-              className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-            >
-              刷新
-            </button>
             <button
               onClick={handleExportExcel}
               disabled={exportingExcel || !stats}
@@ -305,6 +308,24 @@ export function DashboardPage() {
               <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
             </div>
           )}
+          <div className="pt-2">
+            {loading ? (
+              <button
+                onClick={cancelQuery}
+                className="px-4 py-2 text-sm bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center gap-1.5"
+              >
+                <Loader2 size={14} className="animate-spin" />
+                查询中...点击取消
+              </button>
+            ) : (
+              <button
+                onClick={loadStats}
+                className="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+              >
+                🔍 查询统计数据
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -338,8 +359,15 @@ export function DashboardPage() {
         </div>
       )}
 
-      {!stats ? (
-        <div className="mt-10 text-center text-gray-500">暂无统计数据，请先同步数据</div>
+      {loading ? (
+        <div className="flex items-center justify-center h-48">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+          <span className="ml-3 text-gray-500">正在查询统计数据...</span>
+        </div>
+      ) : !stats ? (
+        <div className="mt-10 text-center text-gray-500">
+          {hasQueried ? '暂无匹配的统计数据' : '请设置筛选条件后点击"查询统计数据"'}
+        </div>
       ) : (
         <div ref={dashboardRef}>
           {/* Basic Count Cards */}
@@ -410,7 +438,7 @@ export function DashboardPage() {
               <SmallStat label="反馈总数" value={stats.feedback_total}
                 tooltip="有反馈的消息总数 = 赞数 + 踩数" />
               <SmallStat label="有内容反馈数" value={stats.feedback_with_content}
-                tooltip="反馈中至少包含 label（rating）或 content 不为空的记录数" />
+                tooltip="反馈数组中至少有一条记录的 rating 或 content 不为空的消息数" />
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <SmallStat label="好评率" value={formatPercent(stats.feedback_like_rate)}
@@ -751,8 +779,8 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="conversations" name="会话数" stroke="#3b82f6" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="messages" name="消息数" stroke="#22c55e" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="conversations" name="会话数" stroke="#3b82f6" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="messages" name="消息数" stroke="#22c55e" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -770,7 +798,7 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="users" name="用户数" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="users" name="用户数" stroke="#8b5cf6" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -788,8 +816,8 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="total_prompt_tokens" name="输入 Token" stroke="#f97316" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="total_answer_tokens" name="输出 Token" stroke="#22c55e" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="total_prompt_tokens" name="输入 Token" stroke="#f97316" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="total_answer_tokens" name="输出 Token" stroke="#22c55e" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -807,7 +835,7 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="errors" name="异常数" stroke="#ef4444" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="errors" name="异常数" stroke="#ef4444" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -825,8 +853,8 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="likes" name="赞数" stroke="#22c55e" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="dislikes" name="踩数" stroke="#ef4444" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="likes" name="赞数" stroke="#22c55e" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="dislikes" name="踩数" stroke="#ef4444" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -844,8 +872,8 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [`${Number(v).toFixed(2)}s`, name]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="avg_elapsed_time" name="平均响应时间" stroke="#3b82f6" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="avg_ttft" name="平均 TTFT" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="avg_elapsed_time" name="平均响应时间" stroke="#3b82f6" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="avg_ttft" name="平均 TTFT" stroke="#8b5cf6" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -863,7 +891,7 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [`${Number(v).toFixed(1)} t/s`, name]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="avg_token_speed" name="Token 速度" stroke="#f97316" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="avg_token_speed" name="Token 速度" stroke="#f97316" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -907,7 +935,7 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
           {models.map((model, idx) => (
             <Line
               key={model}
-              type="monotone"
+              type="linear"
               dataKey={model}
               name={model}
               stroke={MODEL_COLORS[idx % MODEL_COLORS.length]}

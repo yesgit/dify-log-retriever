@@ -1467,7 +1467,10 @@ impl Database {
             [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let total_prompt_tokens: i64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(prompt_tokens), 0) FROM messages WHERE {}", msg_where_q),
+            &format!(
+                "SELECT COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE prompt_tokens END), 0) FROM messages WHERE {}",
+                msg_where_q
+            ),
             [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let message_effective_tokens: i64 = conn.query_row(
@@ -1560,10 +1563,10 @@ impl Database {
 
         let feedback_with_content: i64 = conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM messages WHERE feedback IS NOT NULL AND EXISTS (
+                "SELECT COUNT(*) FROM messages WHERE EXISTS (
                     SELECT 1 FROM json_each(feedbacks) WHERE
-                        (COALESCE(json_extract(value, '$.rating'), json_extract(value, '$.label'), json_extract(value, '$.value'), '') != '')
-                        OR (COALESCE(json_extract(value, '$.content'), json_extract(value, '$.message'), '') != '')
+                        COALESCE(json_extract(value, '$.rating'), '') != ''
+                        OR COALESCE(json_extract(value, '$.content'), '') != ''
                 ) AND {}",
                 msg_where_q
             ),
@@ -1712,7 +1715,7 @@ impl Database {
                        COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft_val,
                        COALESCE(AVG(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time END), 0) as avg_speed,
                        COALESCE(SUM(answer_tokens), 0) as answer_token_sum,
-                       COALESCE(SUM(prompt_tokens), 0) as prompt_token_sum
+                       COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE prompt_tokens END), 0) as prompt_token_sum
                 FROM messages
                 WHERE {}
                 GROUP BY day
@@ -2132,7 +2135,7 @@ impl Database {
                         COUNT(*) as msg_count,
                         '' as user_id,
                         COALESCE(SUM(answer_tokens), 0) as answer_token_sum,
-                        COALESCE(SUM(prompt_tokens), 0) as prompt_token_sum,
+                        COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE prompt_tokens END), 0) as prompt_token_sum,
                         COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) as effective_token_sum,
                         SUM(CASE WHEN feedback = 'like' THEN 1 ELSE 0 END) as like_count,
                         SUM(CASE WHEN feedback = 'dislike' THEN 1 ELSE 0 END) as dislike_count,
@@ -2460,10 +2463,10 @@ impl Database {
 
         let feedback_with_content: i64 = conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM messages WHERE feedback IS NOT NULL AND EXISTS (
+                "SELECT COUNT(*) FROM messages WHERE EXISTS (
                     SELECT 1 FROM json_each(feedbacks) WHERE
-                        (COALESCE(json_extract(value, '$.rating'), json_extract(value, '$.label'), json_extract(value, '$.value'), '') != '')
-                        OR (COALESCE(json_extract(value, '$.content'), json_extract(value, '$.message'), '') != '')
+                        COALESCE(json_extract(value, '$.rating'), '') != ''
+                        OR COALESCE(json_extract(value, '$.content'), '') != ''
                 ) AND {}",
                 msg_where_q
             ),
