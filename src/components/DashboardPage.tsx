@@ -12,7 +12,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
   ResponsiveContainer, Legend
 } from 'recharts';
-import type { DashboardStats, DailyStats, DifyApp, StatDistribution, FeedbackLabelStat, ModelDailyTokenSpeed } from '../types';
+import type { DashboardStats, DailyStats, DifyApp, StatDistribution, FeedbackLabelStat, ModelDailyTokenSpeed, ModelPerformanceStats, NodePerformanceStats } from '../types';
 
 // ===== Time Range Presets =====
 interface TimePreset {
@@ -209,14 +209,6 @@ export function DashboardPage() {
   };
 
   const formatPercent = (n: number) => `${n.toFixed(1)}%`;
-
-  const formatTime = (seconds: number) => {
-    if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;
-    if (seconds < 60) return `${seconds.toFixed(2)}s`;
-    return `${(seconds / 60).toFixed(1)}min`;
-  };
-
-  const formatTokensPerSec = (speed: number) => `${speed.toFixed(1)} t/s`;
 
   if (loading && !stats) {
     return (
@@ -570,6 +562,20 @@ export function DashboardPage() {
             </Section>
           )}
 
+          {/* Model Performance Stats */}
+          {stats.model_performance && stats.model_performance.length > 0 && (
+            <Section title="模型性能统计">
+              <ModelPerformanceTable data={stats.model_performance} />
+            </Section>
+          )}
+
+          {/* Node Performance Stats */}
+          {stats.node_performance && stats.node_performance.length > 0 && (
+            <Section title="节点性能统计">
+              <NodePerformanceTable data={stats.node_performance} />
+            </Section>
+          )}
+
           {/* Top Apps */}
           {!selectedAppId && stats.top_apps && stats.top_apps.length > 0 && (
             <Section title="应用排名 (按会话数)">
@@ -599,6 +605,16 @@ function formatStatNumber(n: number): string {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return n.toLocaleString();
+}
+
+function formatTime(seconds: number): string {
+  if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;
+  if (seconds < 60) return `${seconds.toFixed(2)}s`;
+  return `${(seconds / 60).toFixed(1)}min`;
+}
+
+function formatTokensPerSec(speed: number): string {
+  return `${speed.toFixed(1)} t/s`;
 }
 
 // ===== Sub-components =====
@@ -916,6 +932,102 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
           ))}
         </LineChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ── Model Performance Table ──
+function ModelPerformanceTable({ data }: { data: ModelPerformanceStats[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200">
+            <th className="text-left py-2 px-3 text-gray-500 font-medium">模型</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">消息数</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">总 Token</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">平均响应时间</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">平均 TTFT</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">Token 速度</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">异常数</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">异常率</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row) => (
+            <tr key={row.model} className="border-b border-gray-100 hover:bg-gray-50">
+              <td className="py-2 px-3 font-medium text-gray-900 max-w-[200px] truncate" title={row.model}>{row.model}</td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">{row.message_count.toLocaleString()}</td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">{formatStatNumber(row.total_tokens)}</td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">
+                {row.avg_elapsed_time > 0 ? formatTime(row.avg_elapsed_time) : '-'}
+              </td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">
+                {row.avg_ttft > 0 ? formatTime(row.avg_ttft) : '-'}
+              </td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">
+                {row.avg_token_speed > 0 ? formatTokensPerSec(row.avg_token_speed) : '-'}
+              </td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">{row.error_count.toLocaleString()}</td>
+              <td className="py-2 px-3 text-right font-mono">
+                <span className={row.error_rate > 5 ? 'text-red-600 font-medium' : 'text-gray-700'}>
+                  {row.error_rate.toFixed(1)}%
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Node Performance Table ──
+function NodePerformanceTable({ data }: { data: NodePerformanceStats[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200">
+            <th className="text-left py-2 px-3 text-gray-500 font-medium">节点类型</th>
+            <th className="text-left py-2 px-3 text-gray-500 font-medium">标题</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">执行次数</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">平均耗时</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">成功数</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">成功率</th>
+            <th className="text-right py-2 px-3 text-gray-500 font-medium">异常数</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row) => (
+            <tr key={`${row.node_type}::${row.title}`} className="border-b border-gray-100 hover:bg-gray-50">
+              <td className="py-2 px-3">
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">
+                  {row.node_type}
+                </span>
+              </td>
+              <td className="py-2 px-3 font-medium text-gray-900 max-w-[200px] truncate" title={row.title}>{row.title}</td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">{row.execution_count.toLocaleString()}</td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">
+                {row.avg_elapsed_time > 0 ? formatTime(row.avg_elapsed_time) : '-'}
+              </td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">{row.success_count.toLocaleString()}</td>
+              <td className="py-2 px-3 text-right font-mono">
+                <span className={row.success_rate < 90 ? 'text-red-600 font-medium' : row.success_rate < 95 ? 'text-yellow-600 font-medium' : 'text-green-600 font-medium'}>
+                  {row.success_rate.toFixed(1)}%
+                </span>
+              </td>
+              <td className="py-2 px-3 text-right font-mono text-gray-700">
+                {row.error_count > 0 ? (
+                  <span className="text-red-600">{row.error_count.toLocaleString()}</span>
+                ) : (
+                  <span className="text-gray-400">0</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

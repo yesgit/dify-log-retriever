@@ -182,6 +182,8 @@ export interface DashboardStats {
   top_apps: AppRanking[];
   recent_daily: DailyStats[];
   model_token_speed_daily: ModelDailyTokenSpeed[];
+  model_performance: ModelPerformanceStats[];
+  node_performance: NodePerformanceStats[];
 }
 
 export interface ModelDailyTokenSpeed {
@@ -189,6 +191,27 @@ export interface ModelDailyTokenSpeed {
   date: string;
   avg_token_speed: number;
   message_count: number;
+}
+
+export interface ModelPerformanceStats {
+  model: string;
+  message_count: number;
+  total_tokens: number;
+  avg_elapsed_time: number;
+  avg_ttft: number;
+  avg_token_speed: number;
+  error_count: number;
+  error_rate: number;
+}
+
+export interface NodePerformanceStats {
+  node_type: string;
+  title: string;
+  execution_count: number;
+  avg_elapsed_time: number;
+  success_count: number;
+  success_rate: number;
+  error_count: number;
 }
 
 export interface AppRanking {

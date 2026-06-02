@@ -444,6 +444,10 @@ pub struct DashboardStats {
     pub recent_daily: Vec<DailyStats>,
     // Per-model token speed trend
     pub model_token_speed_daily: Vec<ModelDailyTokenSpeed>,
+    // Per-model performance stats
+    pub model_performance: Vec<ModelPerformanceStats>,
+    // Per-node-type performance stats
+    pub node_performance: Vec<NodePerformanceStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,6 +456,31 @@ pub struct ModelDailyTokenSpeed {
     pub date: String,
     pub avg_token_speed: f64,
     pub message_count: i64,
+}
+
+/// Per-model aggregated performance statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelPerformanceStats {
+    pub model: String,
+    pub message_count: i64,
+    pub total_tokens: i64,
+    pub avg_elapsed_time: f64,
+    pub avg_ttft: f64,
+    pub avg_token_speed: f64,
+    pub error_count: i64,
+    pub error_rate: f64,
+}
+
+/// Per-node-type aggregated performance statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodePerformanceStats {
+    pub node_type: String,
+    pub title: String,
+    pub execution_count: i64,
+    pub avg_elapsed_time: f64,
+    pub success_count: i64,
+    pub success_rate: f64,
+    pub error_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

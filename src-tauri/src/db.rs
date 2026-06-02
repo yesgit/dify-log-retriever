@@ -1764,6 +1764,69 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
+        // ── Per-model aggregated performance stats ──
+        let model_perf_sql = format!(
+            "SELECT
+                COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
+                COUNT(*) as msg_count,
+                COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) as total_tokens,
+                COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
+                COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft,
+                COALESCE(AVG(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time END), 0) as avg_speed,
+                SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as err_count
+             FROM messages
+             WHERE {}
+             GROUP BY model
+             ORDER BY msg_count DESC",
+            msg_where_q
+        );
+        let mut model_perf_stmt = conn.prepare(&model_perf_sql).map_err(|e| e.to_string())?;
+        let model_performance: Vec<ModelPerformanceStats> = model_perf_stmt.query_map([], |row| {
+            let msg_count: i64 = row.get(1)?;
+            let err_count: i64 = row.get(6)?;
+            Ok(ModelPerformanceStats {
+                model: row.get(0)?,
+                message_count: msg_count,
+                total_tokens: row.get(2)?,
+                avg_elapsed_time: row.get(3)?,
+                avg_ttft: row.get(4)?,
+                avg_token_speed: row.get(5)?,
+                error_count: err_count,
+                error_rate: if msg_count > 0 { err_count as f64 / msg_count as f64 * 100.0 } else { 0.0 },
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        // ── Per-node-type aggregated performance stats ──
+        let node_where = build_where_prefixed("ne.", app_id, start_time, end_time);
+        let node_perf_sql = format!(
+            "SELECT
+                ne.node_type,
+                COALESCE(NULLIF(ne.title, ''), '(未命名)') as title,
+                COUNT(*) as exec_count,
+                COALESCE(AVG(ne.elapsed_time), 0) as avg_elapsed,
+                SUM(CASE WHEN ne.status = 'succeeded' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN ne.status != 'succeeded' THEN 1 ELSE 0 END) as err_count
+             FROM node_executions ne
+             WHERE ne.node_type != '' AND {}
+             GROUP BY ne.node_type, COALESCE(NULLIF(ne.title, ''), '(未命名)')
+             ORDER BY exec_count DESC",
+            node_where
+        );
+        let mut node_perf_stmt = conn.prepare(&node_perf_sql).map_err(|e| e.to_string())?;
+        let node_performance: Vec<NodePerformanceStats> = node_perf_stmt.query_map([], |row| {
+            let exec_count: i64 = row.get(2)?;
+            let success_count: i64 = row.get(4)?;
+            Ok(NodePerformanceStats {
+                node_type: row.get(0)?,
+                title: row.get(1)?,
+                execution_count: exec_count,
+                avg_elapsed_time: row.get(3)?,
+                success_count,
+                success_rate: if exec_count > 0 { success_count as f64 / exec_count as f64 * 100.0 } else { 0.0 },
+                error_count: row.get(5)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
         Ok(DashboardStats {
             total_apps,
             total_users,
@@ -1800,6 +1863,8 @@ impl Database {
             top_apps,
             recent_daily,
             model_token_speed_daily,
+            model_performance,
+            node_performance,
         })
     }
 }
