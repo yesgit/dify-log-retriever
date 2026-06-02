@@ -939,6 +939,143 @@ fn vacuum_database(state: State<AppState>) -> Result<String, String> {
     ))
 }
 
+// ===== DSL Backup =====
+#[tauri::command]
+fn get_dsl_backup_settings(state: State<AppState>) -> Result<DslBackupSettings, String> {
+    state.db.get_dsl_backup_settings()
+}
+
+#[tauri::command]
+fn save_dsl_backup_settings(state: State<AppState>, settings: DslBackupSettings) -> Result<(), String> {
+    state.db.save_dsl_backup_settings(&settings)
+}
+
+#[tauri::command]
+async fn backup_all_dsl(state: State<'_, AppState>, include_secret: Option<bool>) -> Result<Vec<DslBackupResult>, String> {
+    let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
+    let apps = state.db.get_apps()?;
+    if apps.is_empty() {
+        return Err("没有已同步的应用，请先在应用管理中同步应用列表".to_string());
+    }
+
+    let backup_settings = state.db.get_dsl_backup_settings()?;
+    let backup_dir = if backup_settings.backup_dir.is_empty() {
+        return Err("请先配置备份目录".to_string());
+    } else {
+        backup_settings.backup_dir.clone()
+    };
+
+    let secret = include_secret.unwrap_or(backup_settings.include_secret);
+
+    // Create timestamped subdirectory
+    let now = chrono::Local::now();
+    let subdir = now.format("%Y-%m-%d_%H%M%S").to_string();
+    let backup_path = std::path::PathBuf::from(&backup_dir).join(&subdir);
+    std::fs::create_dir_all(&backup_path)
+        .map_err(|e| format!("创建备份目录失败: {}", e))?;
+
+    let mut client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
+
+    let mut results: Vec<DslBackupResult> = Vec::new();
+
+    for app in &apps {
+        // Try to fetch DSL, auto-refresh on auth error
+        let dsl_content = match client.fetch_app_dsl(&app.id, secret).await {
+            Ok(content) => content,
+            Err(ref e) if DifyApiClient::is_auth_error(e) => {
+                let refreshed_config = try_auto_refresh(&state.db).await?;
+                client = DifyApiClient::new(
+                    &refreshed_config.api_base,
+                    &refreshed_config.api_key,
+                    refreshed_config.proxy.as_deref(),
+                )?;
+                match client.fetch_app_dsl(&app.id, secret).await {
+                    Ok(content) => content,
+                    Err(e) => {
+                        results.push(DslBackupResult {
+                            app_id: app.id.clone(),
+                            app_name: app.name.clone(),
+                            success: false,
+                            file_path: None,
+                            error: Some(e),
+                        });
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                results.push(DslBackupResult {
+                    app_id: app.id.clone(),
+                    app_name: app.name.clone(),
+                    success: false,
+                    file_path: None,
+                    error: Some(e),
+                });
+                continue;
+            }
+        };
+
+        // Sanitize app name for filename, fallback to app ID if name is empty/all-special-chars
+        // Include app ID suffix to avoid filename collisions when multiple apps share the same name
+        let safe_name: String = {
+            let sanitized: String = app.name
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                .collect();
+            let trimmed = sanitized.trim_matches('_');
+            let short_id: String = app.id.chars().take(8).collect();
+            let name_with_id = if trimmed.is_empty() {
+                app.id.clone()
+            } else {
+                format!("{}_{}", trimmed, short_id)
+            };
+            // Truncate to avoid exceeding filesystem limits (255 bytes).
+            // Reserve space for ".yml" (4 bytes), use max 200 bytes for the name.
+            let max_bytes = 200;
+            let mut byte_count = 0;
+            let truncated: String = name_with_id
+                .chars()
+                .take_while(|c| {
+                    byte_count += c.len_utf8();
+                    byte_count <= max_bytes
+                })
+                .collect();
+            truncated
+        };
+        let filename = format!("{}.yml", safe_name);
+        let file_path = backup_path.join(&filename);
+
+        match std::fs::write(&file_path, &dsl_content) {
+            Ok(_) => {
+                results.push(DslBackupResult {
+                    app_id: app.id.clone(),
+                    app_name: app.name.clone(),
+                    success: true,
+                    file_path: Some(file_path.to_string_lossy().to_string()),
+                    error: None,
+                });
+            }
+            Err(e) => {
+                results.push(DslBackupResult {
+                    app_id: app.id.clone(),
+                    app_name: app.name.clone(),
+                    success: false,
+                    file_path: None,
+                    error: Some(format!("写入文件失败: {}", e)),
+                });
+            }
+        }
+    }
+
+    // Only update last backup timestamp if at least one backup succeeded
+    if results.iter().any(|r| r.success) {
+        let now_ts = chrono::Utc::now().timestamp();
+        let _ = state.db.update_dsl_backup_last_backup(now_ts);
+    }
+
+    Ok(results)
+}
+
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -987,6 +1124,9 @@ pub fn run() {
             get_db_size_info,
             cleanup_raw_json,
             vacuum_database,
+            get_dsl_backup_settings,
+            save_dsl_backup_settings,
+            backup_all_dsl,
             get_app_version,
         ])
         .run(tauri::generate_context!())

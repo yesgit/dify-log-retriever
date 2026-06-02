@@ -14,6 +14,7 @@ import {
   CheckCircle,
   XCircle,
   Gauge,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -33,6 +34,7 @@ const navItems: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'dashboard', label: '数据看板', icon: <BarChart3 size={20} /> },
   { page: 'performance', label: '性能分析', icon: <Gauge size={20} /> },
   { page: 'export', label: '数据导出', icon: <Download size={20} /> },
+  { page: 'dsl-backup', label: 'DSL 备份', icon: <ShieldCheck size={20} /> },
 ];
 
 export function Layout({ currentPage, onNavigate, autoSyncStatus, lastAutoSyncResult, children }: LayoutProps) {

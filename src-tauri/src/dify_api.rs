@@ -302,6 +302,31 @@ impl DifyApiClient {
         Ok(result)
     }
 
+    // ===== Export App DSL =====
+    pub async fn fetch_app_dsl(&self, app_id: &str, include_secret: bool) -> Result<String, String> {
+        let secret_param = if include_secret { "true" } else { "false" };
+        let value = self
+            .send_value(
+                self.authed_get(&format!("/apps/{}/export", app_id))
+                    .query(&[("include_secret", secret_param)]),
+                "导出应用 DSL 失败",
+            )
+            .await?;
+
+        // Response format: { "data": "yaml_string" }
+        let dsl_content = value
+            .get("data")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if dsl_content.is_empty() {
+            return Err("导出 DSL 返回内容为空".to_string());
+        }
+
+        Ok(dsl_content)
+    }
+
     pub async fn fetch_node_executions(
         &self,
         app_id: &str,

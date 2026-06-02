@@ -1,5 +1,5 @@
 // ===== Page State =====
-export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'performance' | 'export' | 'feedback';
+export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'performance' | 'export' | 'feedback' | 'dsl-backup';
 
 // ===== Config =====
 export interface DifyConfig {
@@ -325,6 +325,23 @@ export interface FeedbackMessage {
 export interface FeedbackResult {
   data: FeedbackMessage[];
   total: number;
+}
+
+// ===== DSL Backup =====
+export interface DslBackupSettings {
+  enabled: boolean;
+  interval_minutes: number;
+  backup_dir: string;
+  include_secret: boolean;
+  last_backup_at: number | null;
+}
+
+export interface DslBackupResult {
+  app_id: string;
+  app_name: string;
+  success: boolean;
+  file_path: string | null;
+  error: string | null;
 }
 
 // ===== Database Maintenance =====

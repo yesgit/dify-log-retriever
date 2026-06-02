@@ -434,6 +434,86 @@ impl Database {
         Ok(())
     }
 
+    // ===== DSL Backup Settings =====
+    pub fn get_dsl_backup_settings(&self) -> Result<DslBackupSettings, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let enabled: bool = conn
+            .query_row("SELECT value FROM settings WHERE key = 'dsl_backup_enabled'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(false);
+        let interval_minutes: i64 = conn
+            .query_row("SELECT value FROM settings WHERE key = 'dsl_backup_interval'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1440); // default 24 hours
+        let backup_dir: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'dsl_backup_dir'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .unwrap_or_default();
+        let include_secret: bool = conn
+            .query_row("SELECT value FROM settings WHERE key = 'dsl_backup_include_secret'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(false);
+        let last_backup_at: Option<i64> = conn
+            .query_row("SELECT value FROM settings WHERE key = 'dsl_backup_last_backup'", [], |row| row.get::<_, String>(0))
+            .ok()
+            .and_then(|v| v.parse().ok());
+        Ok(DslBackupSettings {
+            enabled,
+            interval_minutes,
+            backup_dir,
+            include_secret,
+            last_backup_at,
+        })
+    }
+
+    pub fn save_dsl_backup_settings(&self, settings: &DslBackupSettings) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["dsl_backup_enabled", settings.enabled.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["dsl_backup_interval", settings.interval_minutes.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["dsl_backup_dir", &settings.backup_dir],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["dsl_backup_include_secret", settings.include_secret.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(ts) = settings.last_backup_at {
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params!["dsl_backup_last_backup", ts.to_string()],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute("DELETE FROM settings WHERE key = 'dsl_backup_last_backup'", [])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn update_dsl_backup_last_backup(&self, ts: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params!["dsl_backup_last_backup", ts.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn update_api_key(&self, new_key: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(

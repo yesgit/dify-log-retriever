@@ -696,6 +696,27 @@ pub struct FeedbackResult {
     pub total: i64,
 }
 
+// ===== DSL Backup Settings =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DslBackupSettings {
+    pub enabled: bool,
+    pub interval_minutes: i64,
+    pub backup_dir: String,
+    #[serde(default)]
+    pub include_secret: bool,
+    #[serde(default)]
+    pub last_backup_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DslBackupResult {
+    pub app_id: String,
+    pub app_name: String,
+    pub success: bool,
+    pub file_path: Option<String>,
+    pub error: Option<String>,
+}
+
 // ===== Database Maintenance =====
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbSizeInfo {

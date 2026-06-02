@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Page, AutoSyncSettings } from './types';
+import type { Page, AutoSyncSettings, DslBackupSettings } from './types';
 import { invoke } from '@tauri-apps/api/core';
 import { Layout } from './components/Layout';
 import { ConfigPage } from './components/ConfigPage';
@@ -10,6 +10,7 @@ import { FeedbackPage } from './components/FeedbackPage';
 import { DashboardPage } from './components/DashboardPage';
 import { PerformancePage } from './components/PerformancePage';
 import { ExportPage } from './components/ExportPage';
+import DslBackupPage from './components/DslBackupPage';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('config');
@@ -24,6 +25,17 @@ function App() {
   const autoSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isAutoSyncingRef = useRef(false);
   const statusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // DSL backup auto-timer
+  const dslBackupSettingsRef = useRef<DslBackupSettings>({
+    enabled: false,
+    interval_minutes: 1440,
+    backup_dir: '',
+    include_secret: false,
+    last_backup_at: null,
+  });
+  const dslBackupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isDslBackupRef = useRef(false);
 
   const doAutoSync = useCallback(async () => {
     if (isAutoSyncingRef.current) return;
@@ -156,6 +168,115 @@ function App() {
     return () => clearInterval(settingsReloadTimer);
   }, [setupAutoSyncTimer]);
 
+  // ===== DSL Auto Backup =====
+  const doAutoDslBackup = useCallback(async () => {
+    if (isDslBackupRef.current) return;
+    const settings = dslBackupSettingsRef.current;
+    if (!settings.enabled || !settings.backup_dir) return;
+
+    isDslBackupRef.current = true;
+    try {
+      console.log('[DSL Auto Backup] Starting automatic DSL backup...');
+      await invoke('backup_all_dsl', { includeSecret: settings.include_secret });
+      // Reload settings to get updated last_backup_at
+      const newSettings = await invoke<DslBackupSettings>('get_dsl_backup_settings');
+      if (newSettings) {
+        dslBackupSettingsRef.current = newSettings;
+      }
+      console.log('[DSL Auto Backup] Backup completed successfully');
+    } catch (e) {
+      console.error('[DSL Auto Backup] Backup failed:', e);
+    } finally {
+      isDslBackupRef.current = false;
+    }
+  }, []);
+
+  const setupDslBackupTimer = useCallback(() => {
+    if (dslBackupTimerRef.current) {
+      clearInterval(dslBackupTimerRef.current);
+      dslBackupTimerRef.current = null;
+    }
+
+    const settings = dslBackupSettingsRef.current;
+    if (!settings.enabled || !settings.backup_dir) return;
+
+    // Clamp interval to at least 1 minute to prevent runaway backup
+    const intervalMs = Math.max(60_000, settings.interval_minutes * 60 * 1000);
+
+    // Check if we should backup immediately
+    if (settings.last_backup_at) {
+      const lastBackup = settings.last_backup_at * 1000;
+      if (Date.now() - lastBackup >= intervalMs) {
+        doAutoDslBackup();
+      }
+    } else {
+      // Never backed up before
+      doAutoDslBackup();
+    }
+
+    // Check every minute
+    dslBackupTimerRef.current = setInterval(() => {
+      const currentSettings = dslBackupSettingsRef.current;
+      if (!currentSettings.enabled || !currentSettings.backup_dir) return;
+
+      const interval = Math.max(60_000, currentSettings.interval_minutes * 60 * 1000);
+      const lastBackup = currentSettings.last_backup_at
+        ? currentSettings.last_backup_at * 1000
+        : 0;
+
+      if (Date.now() - lastBackup >= interval) {
+        doAutoDslBackup();
+      }
+    }, 60000);
+  }, [doAutoDslBackup]);
+
+  // Initialize DSL backup timer
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const settings = await invoke<DslBackupSettings>('get_dsl_backup_settings');
+        if (settings) {
+          dslBackupSettingsRef.current = settings;
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      setupDslBackupTimer();
+    };
+    init();
+
+    return () => {
+      if (dslBackupTimerRef.current) {
+        clearInterval(dslBackupTimerRef.current);
+      }
+    };
+  }, [setupDslBackupTimer]);
+
+  // Reload DSL backup settings periodically
+  useEffect(() => {
+    const reloadDslSettings = async () => {
+      try {
+        const settings = await invoke<DslBackupSettings>('get_dsl_backup_settings');
+        if (settings) {
+          const prevEnabled = dslBackupSettingsRef.current.enabled;
+          const prevInterval = dslBackupSettingsRef.current.interval_minutes;
+          const prevDir = dslBackupSettingsRef.current.backup_dir;
+          dslBackupSettingsRef.current = settings;
+
+          // If key settings changed, restart the timer
+          if (prevEnabled !== settings.enabled || prevInterval !== settings.interval_minutes || prevDir !== settings.backup_dir) {
+            setupDslBackupTimer();
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+
+    const timer = setInterval(reloadDslSettings, 15000);
+    return () => clearInterval(timer);
+  }, [setupDslBackupTimer]);
+
   const renderPage = () => {
     switch (currentPage) {
       case 'config':
@@ -174,6 +295,8 @@ function App() {
         return <PerformancePage />;
       case 'export':
         return <ExportPage />;
+      case 'dsl-backup':
+        return <DslBackupPage />;
       default:
         return <ConfigPage />;
     }
