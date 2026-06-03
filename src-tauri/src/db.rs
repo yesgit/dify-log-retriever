@@ -2319,30 +2319,6 @@ impl Database {
             &format!("SELECT COALESCE(SUM(error_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
             param_refs.as_slice(), |row| row.get(0),
         ).map_err(|e| e.to_string())?;
-        let _: f64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(total_elapsed_time), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
-            param_refs.as_slice(), |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-        let _elapsed_count: i64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(elapsed_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
-            param_refs.as_slice(), |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-        let _ttft_sum: f64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(total_ttft), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
-            param_refs.as_slice(), |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-        let _ttft_count: i64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(ttft_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
-            param_refs.as_slice(), |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-        let _speed_sum: f64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(token_speed_sum), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
-            param_refs.as_slice(), |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-        let _speed_count: i64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(token_speed_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
-            param_refs.as_slice(), |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
 
         let total_apps: i64 = if let Some(aid) = app_id {
             conn.query_row("SELECT COUNT(*) FROM apps WHERE id = ?1", params![aid], |row| row.get(0)).unwrap_or(1)
@@ -2538,6 +2514,29 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
+        // Model token speed daily (realtime query from messages, not pre-aggregated)
+        let model_speed_sql = format!(
+            "SELECT
+                COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
+                date(created_at, 'unixepoch', 'localtime') as day,
+                AVG(CASE WHEN elapsed_time > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time ELSE 0 END) as avg_speed,
+                COUNT(*) as cnt
+             FROM messages
+             WHERE answer_tokens > 0 AND elapsed_time > 0 AND {}
+             GROUP BY model, day
+             ORDER BY model, day",
+            msg_where_q
+        );
+        let mut model_stmt = conn.prepare(&model_speed_sql).map_err(|e| e.to_string())?;
+        let model_token_speed_daily: Vec<ModelDailyTokenSpeed> = model_stmt.query_map([], |row| {
+            Ok(ModelDailyTokenSpeed {
+                model: row.get(0)?,
+                date: row.get(1)?,
+                avg_token_speed: row.get(2)?,
+                message_count: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
         Ok(DashboardStats {
             total_apps, total_users, total_conversations, total_messages,
             total_answer_tokens, total_prompt_tokens, total_tokens, daily_avg_tokens,
@@ -2553,7 +2552,7 @@ impl Database {
             user_feedback_count_distribution, conversation_feedback_count_distribution,
             message_feedback_count_distribution,
             feedback_label_stats, top_apps, recent_daily,
-            model_token_speed_daily: vec![], // moved to performance page
+            model_token_speed_daily,
             model_performance: vec![],       // moved to performance page
             node_performance: vec![],        // moved to performance page
         })
@@ -2759,7 +2758,9 @@ fn build_conv_where(app_id: Option<&str>, start_time: Option<i64>, end_time: Opt
 fn build_where_prefixed(prefix: &str, app_id: Option<&str>, start_time: Option<i64>, end_time: Option<i64>) -> String {
     let mut conditions = vec!["1=1".to_string()];
     if let Some(aid) = app_id {
-        conditions.push(format!("{}app_id = '{}'", prefix, aid));
+        // Escape single quotes to prevent SQL injection
+        let escaped = aid.replace('\'', "''");
+        conditions.push(format!("{}app_id = '{}'", prefix, escaped));
     }
     if let Some(st) = start_time {
         conditions.push(format!("{}created_at >= {}", prefix, st));

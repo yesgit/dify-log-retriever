@@ -4,14 +4,15 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
 import html2canvas from 'html2canvas';
 import {
-  Gauge, RefreshCw, CheckCircle, Clock, AlertTriangle,
+  Gauge, RefreshCw, Clock,
   Download, Camera, Loader2, ExternalLink, FolderOpen, ChevronDown, ChevronRight,
+  Search, CheckSquare, Square,
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
   ResponsiveContainer, Legend,
 } from 'recharts';
-import type { PerformanceStats, DifyApp, AggregationStatus, NodeDailyPerformance, ModelDailyTokenSpeed } from '../types';
+import type { PerformanceStats, DifyApp, NodeDailyPerformance, ModelDailyTokenSpeed } from '../types';
 
 const CHART_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'];
 
@@ -24,8 +25,6 @@ export function PerformancePage() {
   const [stats, setStats] = useState<PerformanceStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
-  const [aggStatus, setAggStatus] = useState<AggregationStatus | null>(null);
-  const [rebuilding, setRebuilding] = useState(false);
   const [exportingExcel, setExportingExcel] = useState(false);
   const [exportingScreenshot, setExportingScreenshot] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
@@ -33,21 +32,26 @@ export function PerformancePage() {
   const [exportFilePath, setExportFilePath] = useState<string | null>(null);
   const [showNodeTable, setShowNodeTable] = useState(false);
   const [showModelTable, setShowModelTable] = useState(false);
+  const [selectedNodeKeys, setSelectedNodeKeys] = useState<Set<string>>(new Set());
+  const [showNodeSelector, setShowNodeSelector] = useState(false);
+  const [nodeSearchText, setNodeSearchText] = useState('');
   const performanceRef = useRef<HTMLDivElement>(null);
+  const nodeSelectorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     invoke<DifyApp[]>('get_local_apps').then(setApps).catch(console.error);
-    loadAggStatus();
   }, []);
 
-  const loadAggStatus = async () => {
-    try {
-      const status = await invoke<AggregationStatus>('get_aggregation_status');
-      setAggStatus(status);
-    } catch (e) {
-      console.error(e);
-    }
-  };
+  // Close node selector dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (nodeSelectorRef.current && !nodeSelectorRef.current.contains(e.target as Node)) {
+        setShowNodeSelector(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Extract unique node types from stats
   const nodeTypes = useMemo(() => {
@@ -58,6 +62,22 @@ export function PerformancePage() {
     return [...types].sort();
   }, [stats]);
 
+  // Extract unique node keys (type::title) from filtered daily data
+  const availableNodeKeys = useMemo(() => {
+    if (!stats) return [];
+    const keySet = new Set<string>();
+    const labelMap = new Map<string, string>();
+    const source = selectedNodeType
+      ? stats.node_daily_performance.filter(n => n.node_type === selectedNodeType)
+      : stats.node_daily_performance;
+    for (const d of source) {
+      const key = `${d.node_type}::${d.title}`;
+      keySet.add(key);
+      labelMap.set(key, `${d.node_type} - ${d.title}`);
+    }
+    return [...keySet].sort().map(key => ({ key, label: labelMap.get(key) || key }));
+  }, [stats, selectedNodeType]);
+
   // Filtered data based on node type selection
   const filteredNodePerformance = useMemo(() => {
     if (!stats) return [];
@@ -67,9 +87,40 @@ export function PerformancePage() {
 
   const filteredNodeDaily = useMemo(() => {
     if (!stats) return [];
-    if (!selectedNodeType) return stats.node_daily_performance;
-    return stats.node_daily_performance.filter(n => n.node_type === selectedNodeType);
+    let data = selectedNodeType
+      ? stats.node_daily_performance.filter(n => n.node_type === selectedNodeType)
+      : stats.node_daily_performance;
+    // Further filter by selected node keys
+    if (selectedNodeKeys.size > 0) {
+      data = data.filter(d => selectedNodeKeys.has(`${d.node_type}::${d.title}`));
+    }
+    return data;
+  }, [stats, selectedNodeType, selectedNodeKeys]);
+
+  // Reset selected node keys when data changes (new query or node type filter change)
+  useEffect(() => {
+    setSelectedNodeKeys(new Set());
   }, [stats, selectedNodeType]);
+
+  const toggleNodeKey = (key: string) => {
+    setSelectedNodeKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const selectAllNodes = () => {
+    setSelectedNodeKeys(new Set(availableNodeKeys.map(n => n.key)));
+  };
+
+  const deselectAllNodes = () => {
+    setSelectedNodeKeys(new Set());
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -88,19 +139,6 @@ export function PerformancePage() {
       setError(e.toString());
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleRebuild = async () => {
-    setRebuilding(true);
-    try {
-      await invoke<string>('rebuild_dashboard_stats');
-      await loadAggStatus();
-      await loadData();
-    } catch (e: any) {
-      setError(e.toString());
-    } finally {
-      setRebuilding(false);
     }
   };
 
@@ -208,34 +246,6 @@ export function PerformancePage() {
           <Gauge size={28} />
           性能分析
         </h2>
-        <div className="flex items-center gap-3">
-          {aggStatus && (
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              {aggStatus.last_aggregated_at ? (
-                <>
-                  <CheckCircle size={14} className="text-green-500" />
-                  <span>
-                    已聚合 {aggStatus.total_days} 天数据 ·{' '}
-                    {new Date(aggStatus.last_aggregated_at * 1000).toLocaleString('zh-CN')}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <AlertTriangle size={14} className="text-amber-500" />
-                  <span>尚未聚合，请先构建聚合数据</span>
-                </>
-              )}
-            </div>
-          )}
-          <button
-            onClick={handleRebuild}
-            disabled={rebuilding}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
-          >
-            <RefreshCw size={14} className={rebuilding ? 'animate-spin' : ''} />
-            {rebuilding ? '构建中...' : '重新聚合'}
-          </button>
-        </div>
       </div>
 
       {/* Filters */}
@@ -337,6 +347,23 @@ export function PerformancePage() {
 
       {stats && (
         <div ref={performanceRef}>
+          {/* Screenshot Header - app name & date range */}
+          <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <Gauge size={20} />
+                性能分析{selectedApp ? ` - ${apps.find(a => a.id === selectedApp)?.name || selectedApp}` : ' - 全部应用'}
+              </h2>
+            </div>
+            <div className="text-sm text-gray-500">
+              {startDate || endDate ? (
+                <>
+                  {startDate || '起始'} ~ {endDate || '至今'}
+                </>
+              ) : '全部时间'}
+            </div>
+          </div>
+
           {/* Node Type Filter */}
           {nodeTypes.length > 1 && (
             <div className="mb-4 bg-white p-3 rounded-xl border border-gray-200 flex items-center gap-3">
@@ -492,7 +519,7 @@ export function PerformancePage() {
           </div>
 
           {/* Node Daily Performance Trend Charts */}
-          {filteredNodeDaily.length > 0 && (
+          {availableNodeKeys.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-6">
               <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
                 <h3 className="font-semibold text-gray-800">
@@ -507,9 +534,87 @@ export function PerformancePage() {
                   {showNodeTable ? '隐藏表格' : '显示表格'}
                 </button>
               </div>
-              <div className="p-4">
-                <NodeDailyCharts data={filteredNodeDaily} />
+
+              {/* Node Multi-Select Filter */}
+              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50/50" ref={nodeSelectorRef}>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-gray-600 whitespace-nowrap">趋势图节点:</span>
+                  <button
+                    onClick={() => setShowNodeSelector(!showNodeSelector)}
+                    className="flex-1 min-w-[200px] flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white hover:border-blue-400 transition-colors"
+                  >
+                    <span className="text-gray-600 truncate">
+                      {selectedNodeKeys.size === 0
+                        ? '全部节点（点击选择）'
+                        : `已选 ${selectedNodeKeys.size} / ${availableNodeKeys.length} 个节点`}
+                    </span>
+                    <ChevronDown size={14} className={`text-gray-400 transition-transform ${showNodeSelector ? 'rotate-180' : ''}`} />
+                  </button>
+                </div>
+
+                {showNodeSelector && (
+                  <div className="mt-2 border border-gray-200 rounded-lg bg-white shadow-lg max-h-[300px] overflow-hidden">
+                    {/* Search & actions bar */}
+                    <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 bg-gray-50 sticky top-0">
+                      <Search size={14} className="text-gray-400 flex-shrink-0" />
+                      <input
+                        type="text"
+                        value={nodeSearchText}
+                        onChange={(e) => setNodeSearchText(e.target.value)}
+                        placeholder="搜索节点..."
+                        className="flex-1 text-sm border-0 outline-none bg-transparent placeholder-gray-400"
+                        autoFocus
+                      />
+                      <button
+                        onClick={selectAllNodes}
+                        className="px-2 py-0.5 text-xs text-blue-600 hover:text-blue-800 whitespace-nowrap"
+                      >
+                        全选
+                      </button>
+                      <button
+                        onClick={deselectAllNodes}
+                        className="px-2 py-0.5 text-xs text-gray-500 hover:text-gray-700 whitespace-nowrap"
+                      >
+                        全不选
+                      </button>
+                    </div>
+                    {/* Checkbox list */}
+                    <div className="overflow-y-auto max-h-[240px]">
+                      {availableNodeKeys
+                        .filter(n => !nodeSearchText || n.label.toLowerCase().includes(nodeSearchText.toLowerCase()))
+                        .map(({ key, label }) => (
+                          <label
+                            key={key}
+                            className="flex items-center gap-2 px-3 py-2 hover:bg-blue-50 cursor-pointer text-sm"
+                          >
+                            {selectedNodeKeys.has(key)
+                              ? <CheckSquare size={14} className="text-blue-500 flex-shrink-0" />
+                              : <Square size={14} className="text-gray-400 flex-shrink-0" />
+                            }
+                            <span className="truncate">{label}</span>
+                          </label>
+                        ))
+                      }
+                      {availableNodeKeys.filter(n => !nodeSearchText || n.label.toLowerCase().includes(nodeSearchText.toLowerCase())).length === 0 && (
+                        <div className="px-3 py-4 text-center text-sm text-gray-400">无匹配节点</div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
+
+              {filteredNodeDaily.length > 0 ? (
+                <div className="p-4">
+                  <NodeDailyCharts data={filteredNodeDaily} />
+                </div>
+              ) : (
+                <div className="px-5 py-8 text-center text-gray-400">
+                  {selectedNodeKeys.size === 0
+                    ? '请在上方选择一个或多个节点以显示趋势图'
+                    : '所选节点无每日趋势数据'}
+                </div>
+              )}
+
               {showNodeTable && (
                 <div className="overflow-x-auto border-t border-gray-100">
                   <table className="w-full text-sm">
@@ -551,12 +656,21 @@ export function PerformancePage() {
         <div className="bg-white rounded-xl border border-gray-200 px-5 py-16 text-center text-gray-400">
           <Clock size={40} className="mx-auto mb-3 opacity-50" />
           <p className="text-lg">选择筛选条件后点击"查询"加载性能数据</p>
-          <p className="text-sm mt-1">建议先点击"重新聚合"构建聚合数据以加速查询</p>
         </div>
       )}
     </div>
   );
 }
+
+// ===== Shared XAxis props for 45° angled date labels =====
+const angledXAxisProps = {
+  dataKey: 'date',
+  tick: { fontSize: 10, angle: -45, textAnchor: 'end' as const },
+  stroke: '#9ca3af',
+  tickMargin: 8,
+  height: 60,
+  interval: 0 as const,
+};
 
 // ===== Model Token Speed Trend Chart =====
 function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
@@ -584,10 +698,10 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
   return (
     <div>
       <h4 className="text-sm font-medium text-gray-700 mb-3">各模型 Token 生成速度趋势</h4>
-      <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={pivot}>
+      <ResponsiveContainer width="100%" height={320}>
+        <LineChart data={pivot} margin={{ left: 10, right: 10, bottom: 30 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-          <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+          <XAxis {...angledXAxisProps} />
           <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit=" t/s" />
           <RechartsTooltip
             contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -688,10 +802,10 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
       {/* Average Elapsed Time Trend */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日平均耗时趋势 (秒)</h4>
-        <ResponsiveContainer width="100%" height={280}>
-          <LineChart data={timePivot}>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={timePivot} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit="s" />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -717,10 +831,10 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
       {/* Execution Count Trend */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日执行次数趋势</h4>
-        <ResponsiveContainer width="100%" height={280}>
-          <LineChart data={countPivot}>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={countPivot} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -746,10 +860,10 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
       {/* Success/Error Trend */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日成功/错误数趋势</h4>
-        <ResponsiveContainer width="100%" height={280}>
-          <LineChart data={successPivot}>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={successPivot} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}

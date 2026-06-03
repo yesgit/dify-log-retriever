@@ -647,13 +647,11 @@ pub struct AutoSyncSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSyncSetting {
     pub app_id: String,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub sync_workflow_details: bool,
 }
-
-fn default_true() -> bool { true }
 
 // ===== Sync Config (per-app settings collection) =====
 #[derive(Debug, Clone, Serialize, Deserialize)]

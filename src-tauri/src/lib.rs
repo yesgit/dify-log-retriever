@@ -224,7 +224,7 @@ async fn sync_app_data(
         }
     }?;
 
-    let fetch_wf = sync_workflow_details.unwrap_or(true);
+    let fetch_wf = sync_workflow_details.unwrap_or(false);
 
     if app_mode == "workflow" {
         sync_workflow_app(&state, &client, &app_id, incremental.unwrap_or(false), fetch_wf).await
@@ -847,7 +847,7 @@ async fn sync_all_apps(state: State<'_, AppState>, incremental: Option<bool>) ->
                 }
             }
         } else {
-            // No config for this app - sync with defaults (enabled, fetch workflow details)
+            // No config for this app - sync with defaults (enabled, no workflow details)
             match sync_app_data(
                 state.clone(),
                 app.id.clone(),

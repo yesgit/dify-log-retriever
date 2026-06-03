@@ -6,7 +6,7 @@ import html2canvas from 'html2canvas';
 import {
   BarChart3, MessageSquare, Users, Zap, ThumbsUp, ThumbsDown, Minus,
   AlertTriangle, Clock, Activity, Filter, Info, Download, Camera, Loader2,
-  FolderOpen, ExternalLink
+  FolderOpen, ExternalLink, RefreshCw, CheckCircle,
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
@@ -79,10 +79,34 @@ export function DashboardPage() {
   const [exportMsgIsError, setExportMsgIsError] = useState(false);
   const [exportFilePath, setExportFilePath] = useState<string | null>(null);
   const [hasQueried, setHasQueried] = useState(false);
+  const [aggTotalDays, setAggTotalDays] = useState<number | null>(null);
+  const [aggLastTime, setAggLastTime] = useState<number | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef(false);
 
-  useEffect(() => { loadApps(); }, []);
+  useEffect(() => { loadApps(); loadAggStatus(); }, []);
+
+  const loadAggStatus = async () => {
+    try {
+      const result = await invoke<{ last_aggregated_at: number | null; total_days: number }>('get_aggregation_status');
+      setAggLastTime(result.last_aggregated_at);
+      setAggTotalDays(result.total_days);
+    } catch (e) { console.error(e); }
+  };
+
+  const handleRebuild = async () => {
+    setRebuilding(true);
+    try {
+      const msg = await invoke<string>('rebuild_dashboard_stats');
+      await loadAggStatus();
+      alert(msg);
+    } catch (e: any) {
+      alert(`重新聚合失败: ${e}`);
+    } finally {
+      setRebuilding(false);
+    }
+  };
 
   const loadApps = async () => {
     try {
@@ -240,6 +264,22 @@ export function DashboardPage() {
             <p className="text-gray-500 mt-1">数据统计概览</p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Aggregation status & rebuild button */}
+            {aggLastTime != null && (
+              <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                <CheckCircle size={14} className="text-green-500" />
+                <span>已聚合 {aggTotalDays ?? 0} 天</span>
+              </div>
+            )}
+            <button
+              onClick={handleRebuild}
+              disabled={rebuilding}
+              className="px-3 py-1.5 text-sm bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              title="重新聚合数据（从原始消息全量重建每日统计，加速查询）"
+            >
+              {rebuilding ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              <span className="hidden sm:inline">重新聚合</span>
+            </button>
             <button
               onClick={handleExportExcel}
               disabled={exportingExcel || !stats}
@@ -370,6 +410,26 @@ export function DashboardPage() {
         </div>
       ) : (
         <div ref={dashboardRef}>
+          {/* Screenshot Header - app name & date range */}
+          <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <BarChart3 size={20} />
+                数据看板{selectedAppId ? ` - ${apps.find(a => a.id === selectedAppId)?.name || selectedAppId}` : ' - 全部应用'}
+              </h2>
+            </div>
+            <div className="text-sm text-gray-500">
+              {(() => {
+                const { startTime, endTime } = getTimeRange();
+                const fmt = (ts: number | undefined) => ts ? new Date(ts * 1000).toLocaleDateString('zh-CN') : '';
+                if (startTime && endTime) return `${fmt(startTime)} ~ ${fmt(endTime)}`;
+                if (startTime) return `${fmt(startTime)} ~ 至今`;
+                if (endTime) return `起始 ~ ${fmt(endTime)}`;
+                return '全部时间';
+              })()}
+            </div>
+          </div>
+
           {/* Basic Count Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <StatCard icon={<Users size={18} className="text-blue-500" />} label="活跃用户数" value={stats.total_users}
@@ -728,7 +788,16 @@ function DistributionTable({
         </h4>
       )}
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '16%' }} />
+          </colgroup>
           <thead>
             <tr className="border-b border-gray-200">
               <th className="text-left py-2 px-3 text-gray-500 font-medium">样本数</th>
@@ -757,7 +826,44 @@ function DistributionTable({
   );
 }
 
-function DailyTrendChart({ data }: { data: DailyStats[] }) {
+/** Fill missing dates between first and last date with zero values */
+function fillMissingDates(data: DailyStats[]): DailyStats[] {
+  if (data.length === 0) return data;
+  const sorted = [...data].sort((a, b) => a.date.localeCompare(b.date));
+  const first = new Date(sorted[0].date);
+  const last = new Date(sorted[sorted.length - 1].date);
+  const dateMap = new Map(sorted.map(d => [d.date, d]));
+  const result: DailyStats[] = [];
+  const cur = new Date(first);
+  while (cur <= last) {
+    const ds = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}-${String(cur.getDate()).padStart(2, '0')}`;
+    const existing = dateMap.get(ds);
+    if (existing) {
+      result.push(existing);
+    } else {
+      result.push({
+        date: ds, conversations: 0, messages: 0, tokens: 0, users: 0,
+        errors: 0, likes: 0, dislikes: 0, avg_elapsed_time: 0,
+        avg_ttft: 0, avg_token_speed: 0, total_answer_tokens: 0, total_prompt_tokens: 0,
+      });
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  return result;
+}
+
+/** Shared XAxis props for 45° angled date labels */
+const angledXAxisProps = {
+  dataKey: 'date',
+  tick: { fontSize: 10, angle: -45, textAnchor: 'end' as const },
+  stroke: '#9ca3af',
+  tickMargin: 8,
+  height: 60,
+  interval: 0 as const,
+};
+
+function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
+  const data = fillMissingDates(rawData);
   const formatTickNumber = (v: number) => {
     if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
     if (v >= 1000) return `${(v / 1000).toFixed(1)}K`;
@@ -769,10 +875,10 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
       {/* Conversations & Queries */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日会话数 & 消息数</h4>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={formatTickNumber} />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -788,10 +894,10 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
       {/* Daily Users */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日用户数</h4>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={formatTickNumber} />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -806,10 +912,10 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
       {/* Token trend — split by input/output */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日 Token 消耗（输入/输出）</h4>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={formatTickNumber} />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -825,10 +931,10 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
       {/* Error trend */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日异常数</h4>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={formatTickNumber} />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -843,10 +949,10 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
       {/* Feedback trend */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日反馈（赞/踩）</h4>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={formatTickNumber} />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -862,10 +968,10 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
       {/* Response time trend (seconds scale) */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日响应时间</h4>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit="s" />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -881,10 +987,10 @@ function DailyTrendChart({ data }: { data: DailyStats[] }) {
       {/* Token speed trend (tokens/s scale) */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日 Token 生成速度</h4>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ left: 10, right: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+            <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit=" t/s" />
             <RechartsTooltip
               contentStyle={{ fontSize: 12, borderRadius: 8 }}
@@ -925,7 +1031,7 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
       <ResponsiveContainer width="100%" height={300}>
         <LineChart data={pivot}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-          <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+          <XAxis {...angledXAxisProps} />
           <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit=" t/s" />
           <RechartsTooltip
             contentStyle={{ fontSize: 12, borderRadius: 8 }}

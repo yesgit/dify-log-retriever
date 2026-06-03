@@ -114,7 +114,7 @@ export function SyncPage() {
   // Get sync setting for a specific app
   const getAppSyncSetting = (appId: string): AppSyncSetting => {
     const found = syncConfig.apps.find((a) => a.app_id === appId);
-    return found || { app_id: appId, enabled: true, sync_workflow_details: true };
+    return found || { app_id: appId, enabled: false, sync_workflow_details: false };
   };
 
   // Update sync config for a specific app
@@ -124,7 +124,7 @@ export function SyncPage() {
     if (idx >= 0) {
       newConfig.apps[idx] = { ...newConfig.apps[idx], ...updates };
     } else {
-      newConfig.apps.push({ app_id: appId, enabled: true, sync_workflow_details: true, ...updates });
+      newConfig.apps.push({ app_id: appId, enabled: false, sync_workflow_details: false, ...updates });
     }
     setSyncConfig(newConfig);
     setActionError('');

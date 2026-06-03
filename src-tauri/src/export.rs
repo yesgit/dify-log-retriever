@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use rust_xlsxwriter::*;
 use serde_json::json;
 
-use crate::models::{DashboardStats, FeedbackMessage, MessageDetail, ModelDailyTokenSpeed, ModelPerformanceStats, NodeDailyPerformance, NodeEvalRecord, NodePerformanceStats, PerformanceStats, StatDistribution};
+use crate::models::{DashboardStats, FeedbackMessage, MessageDetail, NodeEvalRecord, PerformanceStats, StatDistribution};
 
 pub fn export_to_json(messages: &[MessageDetail], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
     let data: Vec<serde_json::Value> = messages
