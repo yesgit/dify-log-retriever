@@ -285,13 +285,35 @@ pub fn export_feedback_to_csv(messages: &[FeedbackMessage], save_path: Option<&s
 
 // ===== Node Eval Export Functions =====
 
-/// Extract prompt messages from LLM/Agent node inputs
-/// Dify LLM node inputs typically have a "prompt" array with role/text pairs
-/// Agent nodes may have "instruction" field and "query" from the user
-fn extract_prompt_messages(inputs: &serde_json::Value) -> Vec<(String, String)> {
+/// Extract prompt messages from LLM/Agent node.
+/// Priority: process_data.prompts (runtime actual prompts) > inputs (template config)
+fn extract_prompt_messages(inputs: &serde_json::Value, process_data: &serde_json::Value) -> Vec<(String, String)> {
     let mut messages = Vec::new();
 
-    // Try inputs.prompt (array of {role, text} objects) — standard LLM node format
+    // === Priority 1: process_data.prompts (runtime actual prompts with full conversation history) ===
+    // Dify LLM/Agent nodes store the actual rendered prompts in process_data.prompts as an array
+    // of {role, text, files} objects, which includes the full multi-turn conversation history.
+    if let Some(prompt_arr) = process_data.get("prompts").and_then(|p| p.as_array()) {
+        for item in prompt_arr {
+            let role = item.get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("user")
+                .to_string();
+            let text = item.get("text")
+                .or_else(|| item.get("content"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !text.is_empty() {
+                messages.push((role, text));
+            }
+        }
+        if !messages.is_empty() {
+            return messages;
+        }
+    }
+
+    // === Priority 2: inputs.prompt (template prompt config) ===
     if let Some(prompt_arr) = inputs.get("prompt").and_then(|p| p.as_array()) {
         for item in prompt_arr {
             let role = item.get("role")
@@ -377,8 +399,20 @@ fn extract_output_text(outputs: &serde_json::Value) -> String {
     String::new()
 }
 
-/// Extract model name from node inputs
-fn extract_model(inputs: &serde_json::Value) -> String {
+/// Extract model name from process_data (runtime) and inputs (config).
+/// Priority: process_data.model_name > process_data.model_provider > inputs.model
+fn extract_model(inputs: &serde_json::Value, process_data: &serde_json::Value) -> String {
+    // Priority 1: process_data.model_name (runtime actual model name)
+    if let Some(name) = process_data.get("model_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        return name.to_string();
+    }
+
+    // Priority 2: process_data.model_provider (may contain provider/model info)
+    if let Some(provider) = process_data.get("model_provider").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        return provider.to_string();
+    }
+
+    // Priority 3: inputs.model or inputs.model_provider (config)
     inputs.get("model")
         .or_else(|| inputs.get("model_provider"))
         .and_then(|v| {
@@ -434,15 +468,19 @@ pub fn export_node_eval(
     }
 
     let lines: Vec<String> = records.iter().map(|rec| {
-        let prompt_messages = extract_prompt_messages(&rec.inputs);
+        let prompt_messages = extract_prompt_messages(&rec.inputs, &rec.process_data);
         let output_text = extract_output_text(&rec.outputs);
-        let model = extract_model(&rec.inputs);
+        let model = extract_model(&rec.inputs, &rec.process_data);
         let context = extract_context(&rec.process_data);
         let system_msg = prompt_messages.iter()
             .find(|(role, _)| role == "system")
             .map(|(_, text)| text.clone())
             .unwrap_or_default();
+        // Use the LAST user message for single-turn formats (alpaca/qa),
+        // as multi-turn conversations have multiple user messages and the
+        // last one is the actual query for this node execution.
         let user_msg = prompt_messages.iter()
+            .rev()
             .find(|(role, _)| role == "user")
             .map(|(_, text)| text.clone())
             .unwrap_or_else(|| rec.query.clone());
@@ -450,37 +488,31 @@ pub fn export_node_eval(
 
         let line = match format {
             "openai-eval" => {
-                // OpenAI Evals format: {"messages": [...], "ideal": "..."}
-                let mut msgs = serde_json::json!([]);
-                if let Some(arr) = msgs.as_array_mut() {
-                    if !system_msg.is_empty() {
-                        arr.push(json!({"role": "system", "content": system_msg}));
-                    }
-                    if !user_msg.is_empty() {
-                        arr.push(json!({"role": "user", "content": user_msg}));
-                    }
-                }
+                // OpenAI Evals format: {"messages": [...full multi-turn conversation...], "ideal": "..."}
+                // Include the complete multi-turn conversation history as context,
+                // with the model's response as the "ideal" expected output.
+                let msgs: Vec<serde_json::Value> = prompt_messages.iter()
+                    .map(|(r, t)| json!({"role": r, "content": t}))
+                    .collect();
                 let mut obj = json!({
                     "messages": msgs,
                 });
                 if !output_text.is_empty() {
                     obj["ideal"] = json!(output_text);
                 }
+                if !model.is_empty() {
+                    obj["model"] = json!(model);
+                }
                 serde_json::to_string(&obj).unwrap_or_default()
             }
             "openai-finetune" => {
-                // OpenAI Fine-tuning format: {"messages": [...including assistant response...]}
-                let mut msgs = serde_json::json!([]);
-                if let Some(arr) = msgs.as_array_mut() {
-                    if !system_msg.is_empty() {
-                        arr.push(json!({"role": "system", "content": system_msg}));
-                    }
-                    if !user_msg.is_empty() {
-                        arr.push(json!({"role": "user", "content": user_msg}));
-                    }
-                    if !output_text.is_empty() {
-                        arr.push(json!({"role": "assistant", "content": output_text}));
-                    }
+                // OpenAI Fine-tuning format: {"messages": [...including full history + assistant response...]}
+                // Include the complete multi-turn conversation history plus the model's response.
+                let mut msgs: Vec<serde_json::Value> = prompt_messages.iter()
+                    .map(|(r, t)| json!({"role": r, "content": t}))
+                    .collect();
+                if !output_text.is_empty() {
+                    msgs.push(json!({"role": "assistant", "content": output_text}));
                 }
                 serde_json::to_string(&json!({"messages": msgs})).unwrap_or_default()
             }
