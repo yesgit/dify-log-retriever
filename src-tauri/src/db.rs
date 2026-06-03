@@ -2730,11 +2730,95 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
+        // Agent (per-app) performance stats
+        let agent_perf_sql = format!(
+            "SELECT m.app_id,
+                    COALESCE(a.name, 'Unknown') as app_name,
+                    COUNT(*) as msg_count,
+                    COALESCE(AVG(
+                        CASE WHEN m.elapsed_time > 0 AND m.answer_tokens > 0
+                        THEN CAST(m.answer_tokens AS REAL) / m.elapsed_time
+                        END
+                    ), 0) as avg_speed,
+                    COALESCE(AVG(
+                        CASE WHEN m.provider_response_latency > 0
+                        THEN m.provider_response_latency
+                        END
+                    ), 0) as avg_ttft,
+                    COALESCE(AVG(
+                        CASE WHEN m.elapsed_time > 0
+                        THEN m.elapsed_time
+                        END
+                    ), 0) as avg_elapsed,
+                    COALESCE(SUM(m.answer_tokens), 0) as total_answer_tokens
+             FROM messages m
+             LEFT JOIN apps a ON m.app_id = a.id
+             WHERE {}
+             GROUP BY m.app_id, app_name
+             ORDER BY msg_count DESC",
+            msg_where_q
+        );
+        let mut agent_perf_stmt = conn.prepare(&agent_perf_sql).map_err(|e| e.to_string())?;
+        let agent_performance: Vec<AgentPerformanceStats> = agent_perf_stmt.query_map([], |row| {
+            Ok(AgentPerformanceStats {
+                app_id: row.get(0)?,
+                app_name: row.get(1)?,
+                message_count: row.get(2)?,
+                avg_token_speed: row.get(3)?,
+                avg_ttft: row.get(4)?,
+                avg_elapsed_time: row.get(5)?,
+                total_answer_tokens: row.get(6)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        // Agent daily performance trend
+        let agent_daily_sql = format!(
+            "SELECT m.app_id,
+                    COALESCE(a.name, 'Unknown') as app_name,
+                    date(m.created_at, 'unixepoch', 'localtime') as day,
+                    COUNT(*) as msg_count,
+                    COALESCE(AVG(
+                        CASE WHEN m.elapsed_time > 0 AND m.answer_tokens > 0
+                        THEN CAST(m.answer_tokens AS REAL) / m.elapsed_time
+                        END
+                    ), 0) as avg_speed,
+                    COALESCE(AVG(
+                        CASE WHEN m.provider_response_latency > 0
+                        THEN m.provider_response_latency
+                        END
+                    ), 0) as avg_ttft,
+                    COALESCE(AVG(
+                        CASE WHEN m.elapsed_time > 0
+                        THEN m.elapsed_time
+                        END
+                    ), 0) as avg_elapsed
+             FROM messages m
+             LEFT JOIN apps a ON m.app_id = a.id
+             WHERE {}
+             GROUP BY m.app_id, app_name, day
+             ORDER BY m.app_id, day",
+            msg_where_q
+        );
+        let mut agent_daily_stmt = conn.prepare(&agent_daily_sql).map_err(|e| e.to_string())?;
+        let agent_daily_performance: Vec<AgentDailyPerformance> = agent_daily_stmt.query_map([], |row| {
+            Ok(AgentDailyPerformance {
+                app_id: row.get(0)?,
+                app_name: row.get(1)?,
+                date: row.get(2)?,
+                message_count: row.get(3)?,
+                avg_token_speed: row.get(4)?,
+                avg_ttft: row.get(5)?,
+                avg_elapsed_time: row.get(6)?,
+            })
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
         Ok(PerformanceStats {
             model_performance,
             model_token_speed_daily,
             node_performance,
             node_daily_performance,
+            agent_performance,
+            agent_daily_performance,
         })
     }
 

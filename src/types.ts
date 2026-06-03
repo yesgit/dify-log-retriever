@@ -255,6 +255,28 @@ export interface PerformanceStats {
   model_token_speed_daily: ModelDailyTokenSpeed[];
   node_performance: NodePerformanceStats[];
   node_daily_performance: NodeDailyPerformance[];
+  agent_performance: AgentPerformanceStats[];
+  agent_daily_performance: AgentDailyPerformance[];
+}
+
+export interface AgentPerformanceStats {
+  app_id: string;
+  app_name: string;
+  message_count: number;
+  avg_token_speed: number;
+  avg_ttft: number;
+  avg_elapsed_time: number;
+  total_answer_tokens: number;
+}
+
+export interface AgentDailyPerformance {
+  app_id: string;
+  app_name: string;
+  date: string;
+  message_count: number;
+  avg_token_speed: number;
+  avg_ttft: number;
+  avg_elapsed_time: number;
 }
 
 export interface NodeDailyPerformance {

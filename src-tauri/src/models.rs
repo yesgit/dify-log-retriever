@@ -742,6 +742,10 @@ pub struct PerformanceStats {
     pub node_performance: Vec<NodePerformanceStats>,
     /// Per-node daily performance trend
     pub node_daily_performance: Vec<NodeDailyPerformance>,
+    /// Per-app (Agent) aggregated performance stats
+    pub agent_performance: Vec<AgentPerformanceStats>,
+    /// Per-app (Agent) daily performance trend
+    pub agent_daily_performance: Vec<AgentDailyPerformance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -753,4 +757,26 @@ pub struct NodeDailyPerformance {
     pub avg_elapsed_time: f64,
     pub success_count: i64,
     pub error_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPerformanceStats {
+    pub app_id: String,
+    pub app_name: String,
+    pub message_count: i64,
+    pub avg_token_speed: f64,
+    pub avg_ttft: f64,
+    pub avg_elapsed_time: f64,
+    pub total_answer_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDailyPerformance {
+    pub app_id: String,
+    pub app_name: String,
+    pub date: String,
+    pub message_count: i64,
+    pub avg_token_speed: f64,
+    pub avg_ttft: f64,
+    pub avg_elapsed_time: f64,
 }

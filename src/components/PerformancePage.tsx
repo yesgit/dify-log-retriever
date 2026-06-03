@@ -566,6 +566,114 @@ export function PerformancePage() {
         </div>
       )}
 
+      {/* Agent (per-app) Performance Section */}
+      {stats && stats.agent_performance && stats.agent_performance.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h3 className="text-base font-semibold text-gray-700 mb-4 flex items-center gap-2">
+            <Gauge size={16} className="text-purple-500" />
+            Agent 级别性能统计
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs text-gray-500">
+                  <th className="pb-2 pr-3 font-medium">应用名称</th>
+                  <th className="pb-2 pr-3 font-medium text-right">消息数</th>
+                  <th className="pb-2 pr-3 font-medium text-right">Token 速度</th>
+                  <th className="pb-2 pr-3 font-medium text-right">TTFT</th>
+                  <th className="pb-2 pr-3 font-medium text-right">平均耗时</th>
+                  <th className="pb-2 font-medium text-right">输出 Tokens</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.agent_performance.map((a) => (
+                  <tr key={a.app_id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 pr-3 font-medium text-gray-700 max-w-[200px] truncate" title={a.app_name}>{a.app_name}</td>
+                    <td className="py-2 pr-3 text-right text-gray-600">{a.message_count.toLocaleString()}</td>
+                    <td className="py-2 pr-3 text-right">
+                      <span className={`font-mono ${a.avg_token_speed > 0 ? 'text-green-600' : 'text-gray-300'}`}>
+                        {a.avg_token_speed > 0 ? a.avg_token_speed.toFixed(1) : '-'}
+                      </span>
+                      {a.avg_token_speed > 0 && <span className="text-gray-400 text-xs ml-1">t/s</span>}
+                    </td>
+                    <td className="py-2 pr-3 text-right">
+                      <span className={`font-mono ${a.avg_ttft > 0 ? 'text-blue-600' : 'text-gray-300'}`}>
+                        {a.avg_ttft > 0 ? a.avg_ttft.toFixed(2) : '-'}
+                      </span>
+                      {a.avg_ttft > 0 && <span className="text-gray-400 text-xs ml-1">s</span>}
+                    </td>
+                    <td className="py-2 pr-3 text-right">
+                      <span className={`font-mono ${a.avg_elapsed_time > 0 ? 'text-orange-600' : 'text-gray-300'}`}>
+                        {a.avg_elapsed_time > 0 ? a.avg_elapsed_time.toFixed(2) : '-'}
+                      </span>
+                      {a.avg_elapsed_time > 0 && <span className="text-gray-400 text-xs ml-1">s</span>}
+                    </td>
+                    <td className="py-2 text-right font-mono text-gray-600">{a.total_answer_tokens.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Agent daily TTFT trend chart */}
+          {stats.agent_daily_performance && stats.agent_daily_performance.length > 0 && (
+            <div className="mt-6">
+              <h4 className="text-sm font-medium text-gray-600 mb-3">Agent 每日 TTFT 趋势</h4>
+              <ResponsiveContainer width="100%" height={280}>
+                <LineChart data={(() => {
+                  const dates = [...new Set(stats.agent_daily_performance.map(d => d.date))].sort();
+                  const apps = [...new Set(stats.agent_daily_performance.map(d => d.app_id))];
+                  return dates.map(date => {
+                    const row: Record<string, any> = { date };
+                    apps.forEach(appId => {
+                      const rec = stats.agent_daily_performance.find(d => d.date === date && d.app_id === appId);
+                      const name = rec?.app_name || appId;
+                      row[`${name}_ttft`] = rec?.avg_ttft || null;
+                    });
+                    return row;
+                  });
+                })()}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" height={50} />
+                  <YAxis tick={{ fontSize: 11 }} label={{ value: 'TTFT (s)', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
+                  <RechartsTooltip formatter={(v: any) => v != null ? [`${Number(v).toFixed(3)}s`, ''] : ['-']} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {[...new Set(stats.agent_daily_performance.map(d => d.app_name))].map((name, idx) => (
+                    <Line key={name} type="linear" dataKey={`${name}_ttft`} name={name} stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+
+              <h4 className="text-sm font-medium text-gray-600 mb-3 mt-6">Agent 每日 Token 速度趋势</h4>
+              <ResponsiveContainer width="100%" height={280}>
+                <LineChart data={(() => {
+                  const dates = [...new Set(stats.agent_daily_performance.map(d => d.date))].sort();
+                  const apps = [...new Set(stats.agent_daily_performance.map(d => d.app_id))];
+                  return dates.map(date => {
+                    const row: Record<string, any> = { date };
+                    apps.forEach(appId => {
+                      const rec = stats.agent_daily_performance.find(d => d.date === date && d.app_id === appId);
+                      const name = rec?.app_name || appId;
+                      row[`${name}_speed`] = rec?.avg_token_speed || null;
+                    });
+                    return row;
+                  });
+                })()}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" height={50} />
+                  <YAxis tick={{ fontSize: 11 }} label={{ value: 'tokens/s', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
+                  <RechartsTooltip formatter={(v: any) => v != null ? [`${Number(v).toFixed(1)} t/s`, ''] : ['-']} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {[...new Set(stats.agent_daily_performance.map(d => d.app_name))].map((name, idx) => (
+                    <Line key={name} type="linear" dataKey={`${name}_speed`} name={name} stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+      )}
+
       {!stats && !loading && !error && (
         <div className="bg-white rounded-xl border border-gray-200 px-5 py-16 text-center text-gray-400">
           <Clock size={40} className="mx-auto mb-3 opacity-50" />
