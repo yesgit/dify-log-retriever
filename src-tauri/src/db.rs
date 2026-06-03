@@ -1827,7 +1827,6 @@ impl Database {
         let daily_avg_tokens = total_tokens as f64 / days_in_range;
 
         // Model token speed from LLM node executions (per-model, per-day)
-        let node_speed_where = build_where_prefixed("ne.", app_id, start_time, end_time);
         let model_speed_sql = format!(
             "SELECT
                 COALESCE(

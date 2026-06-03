@@ -11,7 +11,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
   ResponsiveContainer, Legend,
 } from 'recharts';
-import type { PerformanceStats, DifyApp, NodeDailyPerformance, ModelDailyTokenSpeed } from '../types';
+import type { PerformanceStats, DifyApp, NodeDailyPerformance, ModelDailyTokenSpeed, AgentDailyPerformance } from '../types';
 
 const CHART_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'];
 
@@ -38,7 +38,6 @@ export function PerformancePage() {
     invoke<DifyApp[]>('get_local_apps').then(setApps).catch(console.error);
   }, []);
 
-  // Extract unique node types from stats
   const nodeTypes = useMemo(() => {
     if (!stats) return [];
     const types = new Set<string>();
@@ -47,7 +46,6 @@ export function PerformancePage() {
     return [...types].sort();
   }, [stats]);
 
-  // Extract unique node keys (type::title) from filtered daily data
   const availableNodeKeys = useMemo(() => {
     if (!stats) return [];
     const keySet = new Set<string>();
@@ -63,7 +61,6 @@ export function PerformancePage() {
     return [...keySet].sort().map(key => ({ key, label: labelMap.get(key) || key }));
   }, [stats, selectedNodeType]);
 
-  // Filtered data based on node type selection
   const filteredNodePerformance = useMemo(() => {
     if (!stats) return [];
     if (!selectedNodeType) return stats.node_performance;
@@ -75,14 +72,12 @@ export function PerformancePage() {
     let data = selectedNodeType
       ? stats.node_daily_performance.filter(n => n.node_type === selectedNodeType)
       : stats.node_daily_performance;
-    // Further filter by selected node key (single selection)
     if (selectedNodeKey) {
       data = data.filter(d => `${d.node_type}::${d.title}` === selectedNodeKey);
     }
     return data;
   }, [stats, selectedNodeType, selectedNodeKey]);
 
-  // Reset selected node key when data changes (new query or node type filter change)
   useEffect(() => {
     setSelectedNodeKey(null);
   }, [stats, selectedNodeType]);
@@ -99,7 +94,7 @@ export function PerformancePage() {
         endTime: endTs || null,
       });
       setStats(result);
-      setSelectedNodeType(''); // Reset node type filter on new query
+      setSelectedNodeType('');
     } catch (e: any) {
       setError(e.toString());
     } finally {
@@ -140,50 +135,30 @@ export function PerformancePage() {
     if (!performanceRef.current) return;
     setExportingScreenshot(true);
     setExportMsg(null);
-
-    // 1. 先弹保存对话框，用户确认后再执行昂贵的 canvas 渲染
     const filePath = await save({
       defaultPath: `performance_screenshot_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.png`,
       filters: [{ name: 'PNG Image', extensions: ['png'] }],
     });
-    if (!filePath) {
-      setExportingScreenshot(false);
-      return;
-    }
-
+    if (!filePath) { setExportingScreenshot(false); return; }
     try {
-      // 2. 渲染 canvas
       const canvas = await html2canvas(performanceRef.current, {
-        backgroundColor: '#f9fafb',
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        windowWidth: performanceRef.current.scrollWidth,
-        windowHeight: performanceRef.current.scrollHeight,
+        backgroundColor: '#f9fafb', scale: 2, useCORS: true, logging: false,
+        windowWidth: performanceRef.current.scrollWidth, windowHeight: performanceRef.current.scrollHeight,
       });
       const dataUrl = canvas.toDataURL('image/png');
       const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
       const binaryStr = atob(base64Data);
       const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
-      // 3. 写入文件
+      for (let i = 0; i < binaryStr.length; i++) { bytes[i] = binaryStr.charCodeAt(i); }
       const { writeFile } = await import('@tauri-apps/plugin-fs');
       await writeFile(filePath, bytes);
       setExportFilePath(filePath);
       setExportMsg(`截图已保存到: ${filePath}`);
       setExportMsgIsError(false);
     } catch (e: any) {
-      // Fallback: 通过浏览器下载
       try {
         if (performanceRef.current) {
-          const canvas = await html2canvas(performanceRef.current, {
-            backgroundColor: '#f9fafb',
-            scale: 2,
-            useCORS: true,
-            logging: false,
-          });
+          const canvas = await html2canvas(performanceRef.current, { backgroundColor: '#f9fafb', scale: 2, useCORS: true, logging: false });
           const link = document.createElement('a');
           link.download = `performance_screenshot_${Date.now()}.png`;
           link.href = canvas.toDataURL('image/png');
@@ -208,8 +183,7 @@ export function PerformancePage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <Gauge size={28} />
-          性能分析
+          <Gauge size={28} /> 性能分析
         </h2>
       </div>
 
@@ -217,65 +191,40 @@ export function PerformancePage() {
       <div className="flex flex-wrap items-end gap-4 bg-white p-4 rounded-xl border border-gray-200">
         <div className="min-w-[160px]">
           <label className="block text-sm font-medium text-gray-700 mb-1">应用</label>
-          <select
-            value={selectedApp}
-            onChange={(e) => setSelectedApp(e.target.value)}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-          >
+          <select value={selectedApp} onChange={(e) => setSelectedApp(e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">
             <option value="">全部应用</option>
-            {apps.map((app) => (
-              <option key={app.id} value={app.id}>{app.name}</option>
-            ))}
+            {apps.map((app) => (<option key={app.id} value={app.id}>{app.name}</option>))}
           </select>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">开始日期</label>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-          />
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">结束日期</label>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-          />
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" />
         </div>
-        <button
-          onClick={loadData}
-          disabled={loading}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
-        >
-          {loading && <RefreshCw size={14} className="animate-spin" />}
-          查询
+        <button onClick={loadData} disabled={loading}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5">
+          {loading && <RefreshCw size={14} className="animate-spin" />} 查询
         </button>
       </div>
 
       {/* Export buttons */}
       {stats && (
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportExcel}
-            disabled={exportingExcel}
+          <button onClick={handleExportExcel} disabled={exportingExcel}
             className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 flex items-center gap-1.5"
-            title="导出 Excel 报表"
-          >
-            {exportingExcel ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-            导出 Excel
+            title="导出 Excel 报表">
+            {exportingExcel ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} 导出 Excel
           </button>
-          <button
-            onClick={handleExportScreenshot}
-            disabled={exportingScreenshot}
+          <button onClick={handleExportScreenshot} disabled={exportingScreenshot}
             className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 flex items-center gap-1.5"
-            title="导出截图"
-          >
-            {exportingScreenshot ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-            导出截图
+            title="导出截图">
+            {exportingScreenshot ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} 导出截图
           </button>
         </div>
       )}
@@ -283,26 +232,22 @@ export function PerformancePage() {
       {/* Export message */}
       {exportMsg && (
         <div className={`flex items-center gap-2 px-4 py-3 rounded-lg text-sm ${
-          exportMsgIsError ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'
-        }`}>
+          exportMsgIsError ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
           <span className="flex-1">{exportMsg}</span>
           {!exportMsgIsError && exportFilePath && (
             <div className="flex items-center gap-1.5 ml-2">
-              <button
-                onClick={async () => { try { await openPath(exportFilePath); } catch(e) { console.error(e); } }}
-                className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"
-              >
+              <button onClick={async () => { try { await openPath(exportFilePath); } catch(e) { console.error(e); } }}
+                className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
                 <ExternalLink size={12} /> 打开文件
               </button>
-              <button
-                onClick={async () => { try { await revealItemInDir(exportFilePath); } catch(e) { console.error(e); } }}
-                className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"
-              >
+              <button onClick={async () => { try { await revealItemInDir(exportFilePath); } catch(e) { console.error(e); } }}
+                className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
                 <FolderOpen size={12} /> 打开文件夹
               </button>
             </div>
           )}
-          <button onClick={() => { setExportMsg(null); setExportMsgIsError(false); setExportFilePath(null); }} className="ml-1 text-current opacity-60 hover:opacity-100">✕</button>
+          <button onClick={() => { setExportMsg(null); setExportMsgIsError(false); setExportFilePath(null); }}
+            className="ml-1 text-current opacity-60 hover:opacity-100">✕</button>
         </div>
       )}
 
@@ -312,7 +257,7 @@ export function PerformancePage() {
 
       {stats && (
         <div ref={performanceRef}>
-          {/* Screenshot Header - app name & date range */}
+          {/* Screenshot Header */}
           <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex items-center justify-between">
             <div>
               <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
@@ -321,11 +266,7 @@ export function PerformancePage() {
               </h2>
             </div>
             <div className="text-sm text-gray-500">
-              {startDate || endDate ? (
-                <>
-                  {startDate || '起始'} ~ {endDate || '至今'}
-                </>
-              ) : '全部时间'}
+              {startDate || endDate ? (<>{startDate || '起始'} ~ {endDate || '至今'}</>) : '全部时间'}
             </div>
           </div>
 
@@ -334,22 +275,13 @@ export function PerformancePage() {
             <div className="mb-4 bg-white p-3 rounded-xl border border-gray-200 flex items-center gap-3">
               <span className="text-sm font-medium text-gray-700">节点类型筛选:</span>
               <div className="flex flex-wrap gap-1.5">
-                <button
-                  onClick={() => setSelectedNodeType('')}
-                  className={`px-2.5 py-1 text-xs rounded-lg transition-colors ${
-                    !selectedNodeType ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}
-                >
+                <button onClick={() => setSelectedNodeType('')}
+                  className={`px-2.5 py-1 text-xs rounded-lg transition-colors ${!selectedNodeType ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
                   全部
                 </button>
                 {nodeTypes.map((type) => (
-                  <button
-                    key={type}
-                    onClick={() => setSelectedNodeType(type)}
-                    className={`px-2.5 py-1 text-xs rounded-lg transition-colors ${
-                      selectedNodeType === type ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                    }`}
-                  >
+                  <button key={type} onClick={() => setSelectedNodeType(type)}
+                    className={`px-2.5 py-1 text-xs rounded-lg transition-colors ${selectedNodeType === type ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
                     {type}
                   </button>
                 ))}
@@ -403,10 +335,8 @@ export function PerformancePage() {
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-6">
               <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
                 <h3 className="font-semibold text-gray-800">模型 Token 速度趋势</h3>
-                <button
-                  onClick={() => setShowModelTable(!showModelTable)}
-                  className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700"
-                >
+                <button onClick={() => setShowModelTable(!showModelTable)}
+                  className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
                   {showModelTable ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   {showModelTable ? '隐藏表格' : '显示表格'}
                 </button>
@@ -491,44 +421,29 @@ export function PerformancePage() {
                   节点每日性能趋势
                   {selectedNodeType && <span className="ml-2 text-sm font-normal text-blue-600">筛选: {selectedNodeType}</span>}
                 </h3>
-                <button
-                  onClick={() => setShowNodeTable(!showNodeTable)}
-                  className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700"
-                >
+                <button onClick={() => setShowNodeTable(!showNodeTable)}
+                  className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
                   {showNodeTable ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   {showNodeTable ? '隐藏表格' : '显示表格'}
                 </button>
               </div>
-
-              {/* Node Single-Select Filter */}
               <div className="px-5 py-3 border-b border-gray-100 bg-gray-50/50">
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-medium text-gray-600 whitespace-nowrap">趋势图节点:</span>
-                  <select
-                    value={selectedNodeKey || ''}
-                    onChange={(e) => setSelectedNodeKey(e.target.value || null)}
-                    className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-400"
-                  >
+                  <select value={selectedNodeKey || ''} onChange={(e) => setSelectedNodeKey(e.target.value || null)}
+                    className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-400">
                     <option value="">请选择节点</option>
-                    {availableNodeKeys.map(({ key, label }) => (
-                      <option key={key} value={key}>{label}</option>
-                    ))}
+                    {availableNodeKeys.map(({ key, label }) => (<option key={key} value={key}>{label}</option>))}
                   </select>
                 </div>
               </div>
-
               {selectedNodeKey && filteredNodeDaily.length > 0 ? (
-                <div className="p-4">
-                  <NodeDailyCharts data={filteredNodeDaily} />
-                </div>
+                <div className="p-4"><NodeDailyCharts data={filteredNodeDaily} /></div>
               ) : (
                 <div className="px-5 py-8 text-center text-gray-400">
-                  {selectedNodeKey
-                    ? '所选节点无每日趋势数据'
-                    : '请在上方选择一个节点以显示趋势图'}
+                  {selectedNodeKey ? '所选节点无每日趋势数据' : '请在上方选择一个节点以显示趋势图'}
                 </div>
               )}
-
               {showNodeTable && (
                 <div className="overflow-x-auto border-t border-gray-100">
                   <table className="w-full text-sm">
@@ -570,8 +485,7 @@ export function PerformancePage() {
       {stats && stats.agent_performance && stats.agent_performance.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <h3 className="text-base font-semibold text-gray-700 mb-4 flex items-center gap-2">
-            <Gauge size={16} className="text-purple-500" />
-            Agent 级别性能统计
+            <Gauge size={16} className="text-purple-500" /> Agent 级别性能统计
           </h3>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -614,62 +528,8 @@ export function PerformancePage() {
               </tbody>
             </table>
           </div>
-
-          {/* Agent daily TTFT trend chart */}
           {stats.agent_daily_performance && stats.agent_daily_performance.length > 0 && (
-            <div className="mt-6">
-              <h4 className="text-sm font-medium text-gray-600 mb-3">Agent 每日 TTFT 趋势</h4>
-              <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={(() => {
-                  const dates = [...new Set(stats.agent_daily_performance.map(d => d.date))].sort();
-                  const apps = [...new Set(stats.agent_daily_performance.map(d => d.app_id))];
-                  return dates.map(date => {
-                    const row: Record<string, any> = { date };
-                    apps.forEach(appId => {
-                      const rec = stats.agent_daily_performance.find(d => d.date === date && d.app_id === appId);
-                      const name = rec?.app_name || appId;
-                      row[`${name}_ttft`] = rec?.avg_ttft || null;
-                    });
-                    return row;
-                  });
-                })()}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" height={50} />
-                  <YAxis tick={{ fontSize: 11 }} label={{ value: 'TTFT (s)', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
-                  <RechartsTooltip formatter={(v: any) => v != null ? [`${Number(v).toFixed(3)}s`, ''] : ['-']} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  {[...new Set(stats.agent_daily_performance.map(d => d.app_name))].map((name, idx) => (
-                    <Line key={name} type="linear" dataKey={`${name}_ttft`} name={name} stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false} />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-
-              <h4 className="text-sm font-medium text-gray-600 mb-3 mt-6">Agent 每日 Token 速度趋势</h4>
-              <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={(() => {
-                  const dates = [...new Set(stats.agent_daily_performance.map(d => d.date))].sort();
-                  const apps = [...new Set(stats.agent_daily_performance.map(d => d.app_id))];
-                  return dates.map(date => {
-                    const row: Record<string, any> = { date };
-                    apps.forEach(appId => {
-                      const rec = stats.agent_daily_performance.find(d => d.date === date && d.app_id === appId);
-                      const name = rec?.app_name || appId;
-                      row[`${name}_speed`] = rec?.avg_token_speed || null;
-                    });
-                    return row;
-                  });
-                })()}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" height={50} />
-                  <YAxis tick={{ fontSize: 11 }} label={{ value: 'tokens/s', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
-                  <RechartsTooltip formatter={(v: any) => v != null ? [`${Number(v).toFixed(1)} t/s`, ''] : ['-']} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  {[...new Set(stats.agent_daily_performance.map(d => d.app_name))].map((name, idx) => (
-                    <Line key={name} type="linear" dataKey={`${name}_speed`} name={name} stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false} />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <AgentDailyCharts data={stats.agent_daily_performance} />
           )}
         </div>
       )}
@@ -699,13 +559,8 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
   const { models, pivot } = useMemo(() => {
     const models = [...new Set(data.map(d => d.model))];
     const dates = [...new Set(data.map(d => d.date))].sort();
-
-    // Build lookup map for O(1) access instead of nested find() calls
     const dataMap = new Map<string, ModelDailyTokenSpeed>();
-    for (const d of data) {
-      dataMap.set(`${d.date}::${d.model}`, d);
-    }
-
+    for (const d of data) { dataMap.set(`${d.date}::${d.model}`, d); }
     const pivot = dates.map(date => {
       const row: Record<string, any> = { date };
       for (const model of models) {
@@ -725,22 +580,12 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
           <XAxis {...angledXAxisProps} />
           <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit=" t/s" />
-          <RechartsTooltip
-            contentStyle={{ fontSize: 12, borderRadius: 8 }}
-            formatter={(v: any, name: any) => [v !== null && v !== undefined ? `${Number(v).toFixed(1)} t/s` : '无数据', name]}
-          />
+          <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
+            formatter={(v: any, name: any) => [v !== null && v !== undefined ? `${Number(v).toFixed(1)} t/s` : '无数据', name]} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
           {models.map((model, idx) => (
-            <Line
-              key={model}
-              type="linear"
-              dataKey={model}
-              name={model}
-              stroke={CHART_COLORS[idx % CHART_COLORS.length]}
-              strokeWidth={2}
-              dot={false}
-              connectNulls={false}
-            />
+            <Line key={model} type="linear" dataKey={model} name={model}
+              stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
           ))}
         </LineChart>
       </ResponsiveContainer>
@@ -750,33 +595,24 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
 
 // ===== Node Daily Performance Charts =====
 function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
-  // Group by node_type + title for chart series, with display labels
   const seriesInfo = useMemo(() => {
     const keySet = new Set<string>();
     const labelMap = new Map<string, string>();
     for (const d of data) {
       const key = `${d.node_type}::${d.title}`;
       keySet.add(key);
-      // Use cleaner label: prefer title, fallback to node_type
       labelMap.set(key, d.title || d.node_type);
     }
-    const keys = [...keySet];
-    return { keys, labelMap };
+    return { keys: [...keySet], labelMap };
   }, [data]);
 
   const { keys, labelMap } = seriesInfo;
 
-  // Memoize all pivot computations to avoid recalculating on parent re-renders
   const { timePivot, countPivot, successPivot, successErrorKeys } = useMemo(() => {
     const dates = [...new Set(data.map(d => d.date))].sort();
-
-    // Build lookup map for O(1) access
     const dataMap = new Map<string, NodeDailyPerformance>();
-    for (const d of data) {
-      dataMap.set(`${d.date}::${d.node_type}::${d.title}`, d);
-    }
+    for (const d of data) { dataMap.set(`${d.date}::${d.node_type}::${d.title}`, d); }
 
-    // Chart 1: Average Elapsed Time
     const timePivot = dates.map(date => {
       const row: Record<string, any> = { date };
       for (const key of keys) {
@@ -786,7 +622,6 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
       return row;
     });
 
-    // Chart 2: Execution Count
     const countPivot = dates.map(date => {
       const row: Record<string, any> = { date };
       for (const key of keys) {
@@ -796,7 +631,6 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
       return row;
     });
 
-    // Chart 3: Success/Error
     const successPivot = dates.map(date => {
       const row: Record<string, any> = { date };
       for (const key of keys) {
@@ -807,7 +641,6 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
       return row;
     });
 
-    // Build success/error series keys with clean display labels
     const successErrorKeys = keys.flatMap(key => {
       const label = labelMap.get(key) || key;
       return [
@@ -821,7 +654,6 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
 
   return (
     <div className="space-y-6">
-      {/* Average Elapsed Time Trend */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日平均耗时趋势 (秒)</h4>
         <ResponsiveContainer width="100%" height={300}>
@@ -829,28 +661,16 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
             <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit="s" />
-            <RechartsTooltip
-              contentStyle={{ fontSize: 12, borderRadius: 8 }}
-              formatter={(v: any, name: any) => [v !== null && v !== undefined ? `${Number(v).toFixed(2)}s` : '无数据', name]}
-            />
+            <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [v !== null && v !== undefined ? `${Number(v).toFixed(2)}s` : '无数据', name]} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {keys.map((key, idx) => (
-              <Line
-                key={key}
-                type="linear"
-                dataKey={key}
-                name={labelMap.get(key) || key}
-                stroke={CHART_COLORS[idx % CHART_COLORS.length]}
-                strokeWidth={2}
-                dot={false}
-                connectNulls={false}
-              />
+              <Line key={key} type="linear" dataKey={key} name={labelMap.get(key) || key}
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
             ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
-
-      {/* Execution Count Trend */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日执行次数趋势</h4>
         <ResponsiveContainer width="100%" height={300}>
@@ -858,28 +678,16 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
             <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" />
-            <RechartsTooltip
-              contentStyle={{ fontSize: 12, borderRadius: 8 }}
-              formatter={(v: any, name: any) => [v !== null && v !== undefined ? Number(v).toLocaleString() : '无数据', name]}
-            />
+            <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [v !== null && v !== undefined ? Number(v).toLocaleString() : '无数据', name]} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {keys.map((key, idx) => (
-              <Line
-                key={key}
-                type="linear"
-                dataKey={key}
-                name={labelMap.get(key) || key}
-                stroke={CHART_COLORS[idx % CHART_COLORS.length]}
-                strokeWidth={2}
-                dot={false}
-                connectNulls={false}
-              />
+              <Line key={key} type="linear" dataKey={key} name={labelMap.get(key) || key}
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
             ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
-
-      {/* Success/Error Trend */}
       <div>
         <h4 className="text-sm font-medium text-gray-700 mb-3">每日成功/错误数趋势</h4>
         <ResponsiveContainer width="100%" height={300}>
@@ -887,23 +695,90 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
             <XAxis {...angledXAxisProps} />
             <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" />
-            <RechartsTooltip
-              contentStyle={{ fontSize: 12, borderRadius: 8 }}
-              formatter={(v: any, name: any) => [v !== null && v !== undefined ? Number(v).toLocaleString() : '无数据', name]}
-            />
+            <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [v !== null && v !== undefined ? Number(v).toLocaleString() : '无数据', name]} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            {successErrorKeys.map((se, idx) => (
-              <Line
-                key={se.key}
-                type="linear"
-                dataKey={se.key}
-                name={se.name}
-                stroke={se.color}
-                strokeWidth={1.5}
+            {successErrorKeys.map((se) => (
+              <Line key={se.key} type="linear" dataKey={se.key} name={se.name}
+                stroke={se.color} strokeWidth={1.5}
                 strokeDasharray={se.key.endsWith('_error') ? '5 3' : undefined}
-                dot={false}
-                connectNulls={false}
-              />
+                dot={false} connectNulls={false} />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ===== Agent Daily Performance Charts =====
+function AgentDailyCharts({ data }: { data: AgentDailyPerformance[] }) {
+  const { apps, ttftPivot, speedPivot } = useMemo(() => {
+    const appIds: string[] = [];
+    const appNameMap = new Map<string, string>();
+    for (const d of data) {
+      if (!appNameMap.has(d.app_id)) {
+        appIds.push(d.app_id);
+        appNameMap.set(d.app_id, d.app_name);
+      }
+    }
+    const dates = [...new Set(data.map(d => d.date))].sort();
+    const dataMap = new Map<string, AgentDailyPerformance>();
+    for (const d of data) { dataMap.set(`${d.date}::${d.app_id}`, d); }
+
+    const ttftPivot = dates.map(date => {
+      const row: Record<string, any> = { date };
+      for (const appId of appIds) {
+        const item = dataMap.get(`${date}::${appId}`);
+        row[`${appId}_ttft`] = item && item.avg_ttft > 0 ? Number(item.avg_ttft.toFixed(3)) : null;
+      }
+      return row;
+    });
+
+    const speedPivot = dates.map(date => {
+      const row: Record<string, any> = { date };
+      for (const appId of appIds) {
+        const item = dataMap.get(`${date}::${appId}`);
+        row[`${appId}_speed`] = item && item.avg_token_speed > 0 ? Number(item.avg_token_speed.toFixed(1)) : null;
+      }
+      return row;
+    });
+
+    return { apps: appIds.map(id => ({ id, name: appNameMap.get(id) || id })), ttftPivot, speedPivot };
+  }, [data]);
+
+  return (
+    <div className="mt-6 space-y-6">
+      <div>
+        <h4 className="text-sm font-medium text-gray-600 mb-3">Agent 每日 TTFT 趋势</h4>
+        <ResponsiveContainer width="100%" height={280}>
+          <LineChart data={ttftPivot} margin={{ left: 10, right: 10, bottom: 30 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis {...angledXAxisProps} />
+            <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit="s" />
+            <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [v !== null && v !== undefined ? `${Number(v).toFixed(3)}s` : '无数据', name]} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            {apps.map((app, idx) => (
+              <Line key={app.id} type="linear" dataKey={`${app.id}_ttft`} name={app.name}
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false} />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div>
+        <h4 className="text-sm font-medium text-gray-600 mb-3">Agent 每日 Token 速度趋势</h4>
+        <ResponsiveContainer width="100%" height={280}>
+          <LineChart data={speedPivot} margin={{ left: 10, right: 10, bottom: 30 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis {...angledXAxisProps} />
+            <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" unit=" t/s" />
+            <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
+              formatter={(v: any, name: any) => [v !== null && v !== undefined ? `${Number(v).toFixed(1)} t/s` : '无数据', name]} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            {apps.map((app, idx) => (
+              <Line key={app.id} type="linear" dataKey={`${app.id}_speed`} name={app.name}
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false} />
             ))}
           </LineChart>
         </ResponsiveContainer>
