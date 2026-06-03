@@ -6,7 +6,6 @@ import html2canvas from 'html2canvas';
 import {
   Gauge, RefreshCw, Clock,
   Download, Camera, Loader2, ExternalLink, FolderOpen, ChevronDown, ChevronRight,
-  Search, CheckSquare, Square,
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
@@ -32,25 +31,11 @@ export function PerformancePage() {
   const [exportFilePath, setExportFilePath] = useState<string | null>(null);
   const [showNodeTable, setShowNodeTable] = useState(false);
   const [showModelTable, setShowModelTable] = useState(false);
-  const [selectedNodeKeys, setSelectedNodeKeys] = useState<Set<string>>(new Set());
-  const [showNodeSelector, setShowNodeSelector] = useState(false);
-  const [nodeSearchText, setNodeSearchText] = useState('');
+  const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const performanceRef = useRef<HTMLDivElement>(null);
-  const nodeSelectorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     invoke<DifyApp[]>('get_local_apps').then(setApps).catch(console.error);
-  }, []);
-
-  // Close node selector dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (nodeSelectorRef.current && !nodeSelectorRef.current.contains(e.target as Node)) {
-        setShowNodeSelector(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   // Extract unique node types from stats
@@ -90,37 +75,17 @@ export function PerformancePage() {
     let data = selectedNodeType
       ? stats.node_daily_performance.filter(n => n.node_type === selectedNodeType)
       : stats.node_daily_performance;
-    // Further filter by selected node keys
-    if (selectedNodeKeys.size > 0) {
-      data = data.filter(d => selectedNodeKeys.has(`${d.node_type}::${d.title}`));
+    // Further filter by selected node key (single selection)
+    if (selectedNodeKey) {
+      data = data.filter(d => `${d.node_type}::${d.title}` === selectedNodeKey);
     }
     return data;
-  }, [stats, selectedNodeType, selectedNodeKeys]);
+  }, [stats, selectedNodeType, selectedNodeKey]);
 
-  // Reset selected node keys when data changes (new query or node type filter change)
+  // Reset selected node key when data changes (new query or node type filter change)
   useEffect(() => {
-    setSelectedNodeKeys(new Set());
+    setSelectedNodeKey(null);
   }, [stats, selectedNodeType]);
-
-  const toggleNodeKey = (key: string) => {
-    setSelectedNodeKeys(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  };
-
-  const selectAllNodes = () => {
-    setSelectedNodeKeys(new Set(availableNodeKeys.map(n => n.key)));
-  };
-
-  const deselectAllNodes = () => {
-    setSelectedNodeKeys(new Set());
-  };
 
   const loadData = async () => {
     setLoading(true);
@@ -535,83 +500,32 @@ export function PerformancePage() {
                 </button>
               </div>
 
-              {/* Node Multi-Select Filter */}
-              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50/50" ref={nodeSelectorRef}>
+              {/* Node Single-Select Filter */}
+              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50/50">
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-medium text-gray-600 whitespace-nowrap">趋势图节点:</span>
-                  <button
-                    onClick={() => setShowNodeSelector(!showNodeSelector)}
-                    className="flex-1 min-w-[200px] flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white hover:border-blue-400 transition-colors"
+                  <select
+                    value={selectedNodeKey || ''}
+                    onChange={(e) => setSelectedNodeKey(e.target.value || null)}
+                    className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-400"
                   >
-                    <span className="text-gray-600 truncate">
-                      {selectedNodeKeys.size === 0
-                        ? '全部节点（点击选择）'
-                        : `已选 ${selectedNodeKeys.size} / ${availableNodeKeys.length} 个节点`}
-                    </span>
-                    <ChevronDown size={14} className={`text-gray-400 transition-transform ${showNodeSelector ? 'rotate-180' : ''}`} />
-                  </button>
+                    <option value="">请选择节点</option>
+                    {availableNodeKeys.map(({ key, label }) => (
+                      <option key={key} value={key}>{label}</option>
+                    ))}
+                  </select>
                 </div>
-
-                {showNodeSelector && (
-                  <div className="mt-2 border border-gray-200 rounded-lg bg-white shadow-lg max-h-[300px] overflow-hidden">
-                    {/* Search & actions bar */}
-                    <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 bg-gray-50 sticky top-0">
-                      <Search size={14} className="text-gray-400 flex-shrink-0" />
-                      <input
-                        type="text"
-                        value={nodeSearchText}
-                        onChange={(e) => setNodeSearchText(e.target.value)}
-                        placeholder="搜索节点..."
-                        className="flex-1 text-sm border-0 outline-none bg-transparent placeholder-gray-400"
-                        autoFocus
-                      />
-                      <button
-                        onClick={selectAllNodes}
-                        className="px-2 py-0.5 text-xs text-blue-600 hover:text-blue-800 whitespace-nowrap"
-                      >
-                        全选
-                      </button>
-                      <button
-                        onClick={deselectAllNodes}
-                        className="px-2 py-0.5 text-xs text-gray-500 hover:text-gray-700 whitespace-nowrap"
-                      >
-                        全不选
-                      </button>
-                    </div>
-                    {/* Checkbox list */}
-                    <div className="overflow-y-auto max-h-[240px]">
-                      {availableNodeKeys
-                        .filter(n => !nodeSearchText || n.label.toLowerCase().includes(nodeSearchText.toLowerCase()))
-                        .map(({ key, label }) => (
-                          <label
-                            key={key}
-                            className="flex items-center gap-2 px-3 py-2 hover:bg-blue-50 cursor-pointer text-sm"
-                          >
-                            {selectedNodeKeys.has(key)
-                              ? <CheckSquare size={14} className="text-blue-500 flex-shrink-0" />
-                              : <Square size={14} className="text-gray-400 flex-shrink-0" />
-                            }
-                            <span className="truncate">{label}</span>
-                          </label>
-                        ))
-                      }
-                      {availableNodeKeys.filter(n => !nodeSearchText || n.label.toLowerCase().includes(nodeSearchText.toLowerCase())).length === 0 && (
-                        <div className="px-3 py-4 text-center text-sm text-gray-400">无匹配节点</div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
 
-              {filteredNodeDaily.length > 0 ? (
+              {selectedNodeKey && filteredNodeDaily.length > 0 ? (
                 <div className="p-4">
                   <NodeDailyCharts data={filteredNodeDaily} />
                 </div>
               ) : (
                 <div className="px-5 py-8 text-center text-gray-400">
-                  {selectedNodeKeys.size === 0
-                    ? '请在上方选择一个或多个节点以显示趋势图'
-                    : '所选节点无每日趋势数据'}
+                  {selectedNodeKey
+                    ? '所选节点无每日趋势数据'
+                    : '请在上方选择一个节点以显示趋势图'}
                 </div>
               )}
 
