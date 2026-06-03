@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use rust_xlsxwriter::*;
 use serde_json::json;
 
-use crate::models::{DashboardStats, FeedbackMessage, MessageDetail, NodeEvalRecord, StatDistribution};
+use crate::models::{DashboardStats, FeedbackMessage, MessageDetail, ModelDailyTokenSpeed, ModelPerformanceStats, NodeDailyPerformance, NodeEvalRecord, NodePerformanceStats, PerformanceStats, StatDistribution};
 
 pub fn export_to_json(messages: &[MessageDetail], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
     let data: Vec<serde_json::Value> = messages
@@ -825,5 +825,152 @@ pub fn export_feedback_to_json(messages: &[FeedbackMessage], save_path: Option<&
     let default_filename = format!("feedback_export_{}.json", chrono::Local::now().format("%Y%m%d_%H%M%S"));
     let path = save_path.map(|p| p.to_path_buf()).unwrap_or_else(|| pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename)));
     fs::write(&path, content).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(format!("已导出到: {}", path.display()))
+}
+
+// ===== Performance Export Functions =====
+
+pub fn export_performance_to_excel(stats: &PerformanceStats, app_name: &str, save_path: Option<&std::path::Path>) -> Result<String, String> {
+    let mut workbook = Workbook::new();
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0x4472C4))
+        .set_font_color(Color::White)
+        .set_border(FormatBorder::Thin)
+        .set_text_wrap();
+
+    let value_format = Format::new()
+        .set_border(FormatBorder::Thin);
+
+    let number_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_num_format("#,##0");
+
+    let decimal_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_num_format("0.00");
+
+    let percent_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_num_format("0.0%");
+
+    // ===== Sheet 1: Model Performance =====
+    let model_sheet = workbook.add_worksheet().set_name("模型性能统计").map_err(|e| e.to_string())?;
+    let model_headers: [(&str, f64); 8] = [
+        ("模型", 30.0), ("消息数", 12.0), ("总 Tokens", 14.0),
+        ("平均耗时(s)", 14.0), ("平均 TTFT(s)", 14.0), ("速度(tokens/s)", 14.0),
+        ("错误数", 10.0), ("错误率", 10.0),
+    ];
+    for (col, (_, w)) in model_headers.iter().enumerate() {
+        model_sheet.set_column_width(col as u16, *w).map_err(|e| e.to_string())?;
+    }
+    // Title row (row 0)
+    model_sheet.merge_range(0, 0, 0, 7, "性能分析报告", &header_format).map_err(|e| e.to_string())?;
+    model_sheet.write_string_with_format(1, 0, "筛选应用", &Format::new().set_bold().set_border(FormatBorder::Thin).set_background_color(Color::RGB(0xF2F2F2))).map_err(|e| e.to_string())?;
+    model_sheet.write_string_with_format(1, 1, if app_name.is_empty() { "全部应用" } else { app_name }, &value_format).map_err(|e| e.to_string())?;
+    model_sheet.write_string_with_format(2, 0, "导出时间", &Format::new().set_bold().set_border(FormatBorder::Thin).set_background_color(Color::RGB(0xF2F2F2))).map_err(|e| e.to_string())?;
+    model_sheet.write_string_with_format(2, 1, &chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), &value_format).map_err(|e| e.to_string())?;
+
+    // Headers
+    for (col, (h, _)) in model_headers.iter().enumerate() {
+        model_sheet.write_string_with_format(3, col as u16, *h, &header_format).map_err(|e| e.to_string())?;
+    }
+
+    for (idx, m) in stats.model_performance.iter().enumerate() {
+        let r = (idx + 4) as u32;
+        model_sheet.write_string_with_format(r, 0, &m.model, &value_format).map_err(|e| e.to_string())?;
+        model_sheet.write_number_with_format(r, 1, m.message_count as f64, &number_format).map_err(|e| e.to_string())?;
+        model_sheet.write_number_with_format(r, 2, m.total_tokens as f64, &number_format).map_err(|e| e.to_string())?;
+        model_sheet.write_number_with_format(r, 3, m.avg_elapsed_time, &decimal_format).map_err(|e| e.to_string())?;
+        model_sheet.write_number_with_format(r, 4, m.avg_ttft, &decimal_format).map_err(|e| e.to_string())?;
+        model_sheet.write_number_with_format(r, 5, m.avg_token_speed, &decimal_format).map_err(|e| e.to_string())?;
+        model_sheet.write_number_with_format(r, 6, m.error_count as f64, &number_format).map_err(|e| e.to_string())?;
+        model_sheet.write_number_with_format(r, 7, m.error_rate / 100.0, &percent_format).map_err(|e| e.to_string())?;
+    }
+    if !stats.model_performance.is_empty() {
+        let last_row = (stats.model_performance.len() + 3) as u32;
+        model_sheet.autofilter(3, 0, last_row, 7).map_err(|e| e.to_string())?;
+    }
+    model_sheet.set_freeze_panes(4, 0).map_err(|e| e.to_string())?;
+
+    // ===== Sheet 2: Model Token Speed Trend =====
+    if !stats.model_token_speed_daily.is_empty() {
+        let trend_sheet = workbook.add_worksheet().set_name("模型Token速度趋势").map_err(|e| e.to_string())?;
+        let trend_headers: [(&str, f64); 4] = [
+            ("模型", 30.0), ("日期", 14.0), ("平均速度(tokens/s)", 16.0), ("消息数", 12.0),
+        ];
+        for (col, (h, w)) in trend_headers.iter().enumerate() {
+            trend_sheet.set_column_width(col as u16, *w).map_err(|e| e.to_string())?;
+            trend_sheet.write_string_with_format(0, col as u16, *h, &header_format).map_err(|e| e.to_string())?;
+        }
+        for (idx, d) in stats.model_token_speed_daily.iter().enumerate() {
+            let r = (idx + 1) as u32;
+            trend_sheet.write_string_with_format(r, 0, &d.model, &value_format).map_err(|e| e.to_string())?;
+            trend_sheet.write_string_with_format(r, 1, &d.date, &value_format).map_err(|e| e.to_string())?;
+            trend_sheet.write_number_with_format(r, 2, d.avg_token_speed, &decimal_format).map_err(|e| e.to_string())?;
+            trend_sheet.write_number_with_format(r, 3, d.message_count as f64, &number_format).map_err(|e| e.to_string())?;
+        }
+        let last_row = stats.model_token_speed_daily.len() as u32;
+        trend_sheet.autofilter(0, 0, last_row, 3).map_err(|e| e.to_string())?;
+        trend_sheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+    }
+
+    // ===== Sheet 3: Node Performance =====
+    if !stats.node_performance.is_empty() {
+        let node_sheet = workbook.add_worksheet().set_name("节点性能统计").map_err(|e| e.to_string())?;
+        let node_headers: [(&str, f64); 6] = [
+            ("节点类型", 18.0), ("标题", 25.0), ("执行次数", 12.0),
+            ("平均耗时(s)", 14.0), ("成功率", 10.0), ("错误数", 10.0),
+        ];
+        for (col, (h, w)) in node_headers.iter().enumerate() {
+            node_sheet.set_column_width(col as u16, *w).map_err(|e| e.to_string())?;
+            node_sheet.write_string_with_format(0, col as u16, *h, &header_format).map_err(|e| e.to_string())?;
+        }
+        for (idx, n) in stats.node_performance.iter().enumerate() {
+            let r = (idx + 1) as u32;
+            node_sheet.write_string_with_format(r, 0, &n.node_type, &value_format).map_err(|e| e.to_string())?;
+            node_sheet.write_string_with_format(r, 1, &n.title, &value_format).map_err(|e| e.to_string())?;
+            node_sheet.write_number_with_format(r, 2, n.execution_count as f64, &number_format).map_err(|e| e.to_string())?;
+            node_sheet.write_number_with_format(r, 3, n.avg_elapsed_time, &decimal_format).map_err(|e| e.to_string())?;
+            node_sheet.write_number_with_format(r, 4, n.success_rate / 100.0, &percent_format).map_err(|e| e.to_string())?;
+            node_sheet.write_number_with_format(r, 5, n.error_count as f64, &number_format).map_err(|e| e.to_string())?;
+        }
+        let last_row = stats.node_performance.len() as u32;
+        node_sheet.autofilter(0, 0, last_row, 5).map_err(|e| e.to_string())?;
+        node_sheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+    }
+
+    // ===== Sheet 4: Node Daily Performance =====
+    if !stats.node_daily_performance.is_empty() {
+        let daily_sheet = workbook.add_worksheet().set_name("节点每日性能趋势").map_err(|e| e.to_string())?;
+        let daily_headers: [(&str, f64); 7] = [
+            ("节点类型", 18.0), ("标题", 25.0), ("日期", 14.0),
+            ("执行次数", 12.0), ("平均耗时(s)", 14.0), ("成功数", 10.0), ("错误数", 10.0),
+        ];
+        for (col, (h, w)) in daily_headers.iter().enumerate() {
+            daily_sheet.set_column_width(col as u16, *w).map_err(|e| e.to_string())?;
+            daily_sheet.write_string_with_format(0, col as u16, *h, &header_format).map_err(|e| e.to_string())?;
+        }
+        for (idx, n) in stats.node_daily_performance.iter().enumerate() {
+            let r = (idx + 1) as u32;
+            daily_sheet.write_string_with_format(r, 0, &n.node_type, &value_format).map_err(|e| e.to_string())?;
+            daily_sheet.write_string_with_format(r, 1, &n.title, &value_format).map_err(|e| e.to_string())?;
+            daily_sheet.write_string_with_format(r, 2, &n.date, &value_format).map_err(|e| e.to_string())?;
+            daily_sheet.write_number_with_format(r, 3, n.execution_count as f64, &number_format).map_err(|e| e.to_string())?;
+            daily_sheet.write_number_with_format(r, 4, n.avg_elapsed_time, &decimal_format).map_err(|e| e.to_string())?;
+            daily_sheet.write_number_with_format(r, 5, n.success_count as f64, &number_format).map_err(|e| e.to_string())?;
+            daily_sheet.write_number_with_format(r, 6, n.error_count as f64, &number_format).map_err(|e| e.to_string())?;
+        }
+        let last_row = stats.node_daily_performance.len() as u32;
+        daily_sheet.autofilter(0, 0, last_row, 6).map_err(|e| e.to_string())?;
+        daily_sheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+    }
+
+    // Save file
+    let default_filename = format!("performance_export_{}.xlsx", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let path = save_path.map(|p| p.to_path_buf()).unwrap_or_else(|| pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename)));
+    workbook.save(&path).map_err(|e| format!("保存 Excel 失败: {}", e))?;
+
     Ok(format!("已导出到: {}", path.display()))
 }

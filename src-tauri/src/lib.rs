@@ -920,6 +920,31 @@ fn get_db_size_info(state: State<AppState>) -> Result<DbSizeInfo, String> {
 }
 
 #[tauri::command]
+fn export_performance_excel(
+    state: State<AppState>,
+    app_id: Option<String>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    save_path: Option<String>,
+) -> Result<String, String> {
+    let stats = state.db.get_performance_stats(app_id.as_deref(), start_time, end_time)?;
+
+    let app_name = if let Some(ref aid) = app_id {
+        state.db.get_apps()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|a| a.id == *aid)
+            .map(|a| a.name)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let path = save_path.map(std::path::PathBuf::from);
+    export::export_performance_to_excel(&stats, &app_name, path.as_deref())
+}
+
+#[tauri::command]
 fn cleanup_raw_json(state: State<AppState>) -> Result<String, String> {
     let bytes = state.db.cleanup_raw_json()?;
     Ok(format!("已清理 raw_json，释放约 {} 字节 ({:.2} MB)", bytes, bytes as f64 / 1_048_576.0))
@@ -1121,6 +1146,7 @@ pub fn run() {
             save_auto_sync_settings,
             sync_all_apps,
             export_dashboard_excel,
+            export_performance_excel,
             get_db_size_info,
             cleanup_raw_json,
             vacuum_database,
