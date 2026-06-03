@@ -1831,8 +1831,14 @@ impl Database {
             "SELECT
                 COALESCE(
                     NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_config.model'), ''),
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_provider_model_name'), ''),
                     NULLIF(json_extract(ne.outputs, '$.usage.model_name'), ''),
+                    NULLIF(json_extract(ne.outputs, '$.model'), ''),
                     NULLIF(json_extract(ne.raw_json, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model_config.model'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.inputs.model'), ''),
                     'unknown'
                 ) as model,
                 date(ne.created_at, 'unixepoch', 'localtime') as day,
@@ -2546,8 +2552,14 @@ impl Database {
             "SELECT
                 COALESCE(
                     NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_config.model'), ''),
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_provider_model_name'), ''),
                     NULLIF(json_extract(ne.outputs, '$.usage.model_name'), ''),
+                    NULLIF(json_extract(ne.outputs, '$.model'), ''),
                     NULLIF(json_extract(ne.raw_json, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model_config.model'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.inputs.model'), ''),
                     'unknown'
                 ) as model,
                 date(ne.created_at, 'unixepoch', 'localtime') as day,
@@ -2643,8 +2655,14 @@ impl Database {
             "SELECT
                 COALESCE(
                     NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_config.model'), ''),
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_provider_model_name'), ''),
                     NULLIF(json_extract(ne.outputs, '$.usage.model_name'), ''),
+                    NULLIF(json_extract(ne.outputs, '$.model'), ''),
                     NULLIF(json_extract(ne.raw_json, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model_config.model'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.inputs.model'), ''),
                     'unknown'
                 ) as model,
                 date(ne.created_at, 'unixepoch', 'localtime') as day,
