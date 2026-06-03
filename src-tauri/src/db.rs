@@ -1842,11 +1842,11 @@ impl Database {
                     'unknown'
                 ) as model,
                 date(ne.created_at, 'unixepoch', 'localtime') as day,
-                AVG(
+                COALESCE(AVG(
                     CASE WHEN ne.elapsed_time > 0 AND json_extract(ne.outputs, '$.usage.completion_tokens') > 0
                     THEN CAST(json_extract(ne.outputs, '$.usage.completion_tokens') AS REAL) / ne.elapsed_time
-                    ELSE 0 END
-                ) as avg_speed,
+                    END
+                ), 0) as avg_speed,
                 COUNT(*) as cnt
              FROM node_executions ne
              WHERE ne.node_type = 'llm' AND ne.status = 'succeeded' AND {}
@@ -2563,11 +2563,11 @@ impl Database {
                     'unknown'
                 ) as model,
                 date(ne.created_at, 'unixepoch', 'localtime') as day,
-                AVG(
+                COALESCE(AVG(
                     CASE WHEN ne.elapsed_time > 0 AND json_extract(ne.outputs, '$.usage.completion_tokens') > 0
                     THEN CAST(json_extract(ne.outputs, '$.usage.completion_tokens') AS REAL) / ne.elapsed_time
-                    ELSE 0 END
-                ) as avg_speed,
+                    END
+                ), 0) as avg_speed,
                 COUNT(*) as cnt
              FROM node_executions ne
              WHERE ne.node_type = 'llm' AND ne.status = 'succeeded' AND {}
@@ -2666,11 +2666,11 @@ impl Database {
                     'unknown'
                 ) as model,
                 date(ne.created_at, 'unixepoch', 'localtime') as day,
-                AVG(
+                COALESCE(AVG(
                     CASE WHEN ne.elapsed_time > 0 AND json_extract(ne.outputs, '$.usage.completion_tokens') > 0
                     THEN CAST(json_extract(ne.outputs, '$.usage.completion_tokens') AS REAL) / ne.elapsed_time
-                    ELSE 0 END
-                ) as avg_speed,
+                    END
+                ), 0) as avg_speed,
                 COUNT(*) as cnt
              FROM node_executions ne
              WHERE ne.node_type = 'llm' AND ne.status = 'succeeded' AND {}
