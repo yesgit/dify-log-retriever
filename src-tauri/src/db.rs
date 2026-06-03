@@ -1606,7 +1606,7 @@ impl Database {
 
         let token_speed_distribution = compute_distribution(
             &conn,
-            &format!("SELECT CAST(answer_tokens AS REAL) / elapsed_time FROM messages WHERE elapsed_time > 0 AND answer_tokens > 0 AND {}", msg_where_q),
+            &format!("SELECT CAST(answer_tokens AS REAL) / COALESCE(NULLIF(elapsed_time, 0), provider_response_latency) FROM messages WHERE (elapsed_time > 0 OR provider_response_latency > 0) AND answer_tokens > 0 AND {}", msg_where_q),
         )?;
 
         let user_feedback_count_distribution = compute_distribution(
@@ -1830,6 +1830,7 @@ impl Database {
         let model_speed_sql = format!(
             "SELECT
                 COALESCE(
+                    NULLIF(json_extract(ne.process_data, '$.model_name'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_config.model'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_provider_model_name'), ''),
@@ -1871,8 +1872,8 @@ impl Database {
                 COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) as total_tokens,
                 COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
                 COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft,
-                COALESCE(AVG(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time END), 0) as avg_speed,
-                SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as err_count
+                COALESCE(AVG(CASE WHEN (elapsed_time > 0 OR provider_response_latency > 0) AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / COALESCE(NULLIF(elapsed_time, 0), provider_response_latency) END), 0) as avg_speed,
+                COUNT(*) as cnt
              FROM messages
              WHERE {}
              GROUP BY model
@@ -2177,8 +2178,8 @@ impl Database {
                         SUM(CASE WHEN elapsed_time > 0 THEN 1 ELSE 0 END) as elapsed_cnt,
                         COALESCE(SUM(CASE WHEN provider_response_latency > 0 THEN provider_response_latency ELSE 0 END), 0) as ttft_sum,
                         SUM(CASE WHEN provider_response_latency > 0 THEN 1 ELSE 0 END) as ttft_cnt,
-                        COALESCE(SUM(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time ELSE 0 END), 0) as speed_sum,
-                        SUM(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN 1 ELSE 0 END) as speed_cnt
+                        COALESCE(SUM(CASE WHEN (elapsed_time > 0 OR provider_response_latency > 0) AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / COALESCE(NULLIF(elapsed_time, 0), provider_response_latency) ELSE 0 END), 0) as speed_sum,
+                        SUM(CASE WHEN (elapsed_time > 0 OR provider_response_latency > 0) AND answer_tokens > 0 THEN 1 ELSE 0 END) as speed_cnt
                     FROM messages
                     WHERE app_id = ?1 AND query != ''
                     GROUP BY day, conversation_id
@@ -2433,7 +2434,7 @@ impl Database {
         )?;
         let token_speed_distribution = compute_distribution(
             &conn,
-            &format!("SELECT CAST(answer_tokens AS REAL) / elapsed_time FROM messages WHERE elapsed_time > 0 AND answer_tokens > 0 AND {}", msg_where_q),
+            &format!("SELECT CAST(answer_tokens AS REAL) / COALESCE(NULLIF(elapsed_time, 0), provider_response_latency) FROM messages WHERE (elapsed_time > 0 OR provider_response_latency > 0) AND answer_tokens > 0 AND {}", msg_where_q),
         )?;
         let user_feedback_count_distribution = compute_distribution(
             &conn,
@@ -2551,6 +2552,7 @@ impl Database {
         let model_speed_sql = format!(
             "SELECT
                 COALESCE(
+                    NULLIF(json_extract(ne.process_data, '$.model_name'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_config.model'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_provider_model_name'), ''),
@@ -2626,7 +2628,7 @@ impl Database {
                 COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE (answer_tokens + prompt_tokens) END), 0) as total_tokens,
                 COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
                 COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft,
-                COALESCE(AVG(CASE WHEN elapsed_time > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / elapsed_time END), 0) as avg_speed,
+                COALESCE(AVG(CASE WHEN (elapsed_time > 0 OR provider_response_latency > 0) AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / COALESCE(NULLIF(elapsed_time, 0), provider_response_latency) END), 0) as avg_speed,
                 SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as err_count
              FROM messages
              WHERE {}
@@ -2654,6 +2656,7 @@ impl Database {
         let model_speed_sql = format!(
             "SELECT
                 COALESCE(
+                    NULLIF(json_extract(ne.process_data, '$.model_name'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_config.model'), ''),
                     NULLIF(json_extract(ne.execution_metadata, '$.model_provider_model_name'), ''),
@@ -2754,7 +2757,7 @@ impl Database {
                     COUNT(*) as msg_count,
                     COALESCE(AVG(
                         CASE WHEN m.elapsed_time > 0 AND m.answer_tokens > 0
-                        THEN CAST(m.answer_tokens AS REAL) / m.elapsed_time
+                        THEN CAST(m.answer_tokens AS REAL) / COALESCE(NULLIF(m.elapsed_time, 0), m.provider_response_latency)
                         END
                     ), 0) as avg_speed,
                     COALESCE(AVG(
@@ -2796,7 +2799,7 @@ impl Database {
                     COUNT(*) as msg_count,
                     COALESCE(AVG(
                         CASE WHEN m.elapsed_time > 0 AND m.answer_tokens > 0
-                        THEN CAST(m.answer_tokens AS REAL) / m.elapsed_time
+                        THEN CAST(m.answer_tokens AS REAL) / COALESCE(NULLIF(m.elapsed_time, 0), m.provider_response_latency)
                         END
                     ), 0) as avg_speed,
                     COALESCE(AVG(
