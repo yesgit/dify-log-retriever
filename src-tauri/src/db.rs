@@ -1702,6 +1702,7 @@ impl Database {
             });
         }
 
+        let node_speed_where = build_where_prefixed("ne.", app_id, start_time, end_time);
         let daily_sql = format!(
             "WITH message_daily AS (
                 SELECT date(created_at, 'unixepoch', 'localtime') as day,
@@ -1713,11 +1714,22 @@ impl Database {
                        SUM(CASE WHEN feedback = 'dislike' THEN 1 ELSE 0 END) as dislike_count,
                        COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
                        COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft_val,
-                       COALESCE(AVG(CASE WHEN provider_response_latency > 0 AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / provider_response_latency END), 0) as avg_speed,
+                       0 as avg_speed,
                        COALESCE(SUM(answer_tokens), 0) as answer_token_sum,
                        COALESCE(SUM(CASE WHEN message_tokens > 0 THEN message_tokens ELSE prompt_tokens END), 0) as prompt_token_sum
                 FROM messages
                 WHERE {}
+                GROUP BY day
+            ),
+            llm_speed_daily AS (
+                SELECT date(ne.created_at, 'unixepoch', 'localtime') as day,
+                       COALESCE(AVG(
+                           CASE WHEN ne.elapsed_time > 0 AND json_extract(ne.outputs, '$.usage.completion_tokens') > 0
+                           THEN CAST(json_extract(ne.outputs, '$.usage.completion_tokens') AS REAL) / ne.elapsed_time
+                           END
+                       ), 0) as avg_speed
+                FROM node_executions ne
+                WHERE ne.node_type = 'llm' AND ne.status = 'succeeded' AND {}
                 GROUP BY day
             ),
             workflow_run_scope AS (
@@ -1748,6 +1760,8 @@ impl Database {
                 SELECT day FROM message_daily
                 UNION
                 SELECT day FROM workflow_daily
+                UNION
+                SELECT day FROM llm_speed_daily
             )
             SELECT d.day,
                    COALESCE(md.conv_count, 0) as conv_count,
@@ -1758,14 +1772,16 @@ impl Database {
                    COALESCE(md.dislike_count, 0) as dislike_count,
                    COALESCE(md.avg_elapsed, 0) as avg_elapsed,
                    COALESCE(md.avg_ttft_val, 0) as avg_ttft_val,
-                   COALESCE(md.avg_speed, 0) as avg_speed,
+                   COALESCE(ls.avg_speed, 0) as avg_speed,
                    COALESCE(md.answer_token_sum, 0) as answer_token_sum,
                    COALESCE(md.prompt_token_sum, 0) as prompt_token_sum
             FROM all_days d
             LEFT JOIN message_daily md ON md.day = d.day
             LEFT JOIN workflow_daily wd ON wd.day = d.day
+            LEFT JOIN llm_speed_daily ls ON ls.day = d.day
             ORDER BY d.day ASC",
             msg_where_q,
+            node_speed_where,
             msg_where_m_q
         );
         let mut stmt = conn.prepare(&daily_sql).map_err(|e| e.to_string())?;
@@ -1810,17 +1826,28 @@ impl Database {
         };
         let daily_avg_tokens = total_tokens as f64 / days_in_range;
 
+        // Model token speed from LLM node executions (per-model, per-day)
+        let node_speed_where = build_where_prefixed("ne.", app_id, start_time, end_time);
         let model_speed_sql = format!(
             "SELECT
-                COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
-                date(created_at, 'unixepoch', 'localtime') as day,
-                AVG(CASE WHEN provider_response_latency > 0 THEN CAST(answer_tokens AS REAL) / provider_response_latency ELSE 0 END) as avg_speed,
+                COALESCE(
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.outputs, '$.usage.model_name'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model_name'), ''),
+                    'unknown'
+                ) as model,
+                date(ne.created_at, 'unixepoch', 'localtime') as day,
+                AVG(
+                    CASE WHEN ne.elapsed_time > 0 AND json_extract(ne.outputs, '$.usage.completion_tokens') > 0
+                    THEN CAST(json_extract(ne.outputs, '$.usage.completion_tokens') AS REAL) / ne.elapsed_time
+                    ELSE 0 END
+                ) as avg_speed,
                 COUNT(*) as cnt
-             FROM messages
-             WHERE answer_tokens > 0 AND provider_response_latency > 0 AND {}
+             FROM node_executions ne
+             WHERE ne.node_type = 'llm' AND ne.status = 'succeeded' AND {}
              GROUP BY model, day
              ORDER BY model, day",
-            msg_where_q
+            node_speed_where
         );
         let mut model_stmt = conn.prepare(&model_speed_sql).map_err(|e| e.to_string())?;
         let model_token_speed_daily: Vec<ModelDailyTokenSpeed> = model_stmt.query_map([], |row| {
@@ -2514,18 +2541,28 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
-        // Model token speed daily (realtime query from messages, not pre-aggregated)
+        // Model token speed from LLM node executions
+        let node_speed_where = build_where_prefixed("ne.", app_id, start_time, end_time);
         let model_speed_sql = format!(
             "SELECT
-                COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
-                date(created_at, 'unixepoch', 'localtime') as day,
-                AVG(CASE WHEN provider_response_latency > 0 THEN CAST(answer_tokens AS REAL) / provider_response_latency ELSE 0 END) as avg_speed,
+                COALESCE(
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.outputs, '$.usage.model_name'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model_name'), ''),
+                    'unknown'
+                ) as model,
+                date(ne.created_at, 'unixepoch', 'localtime') as day,
+                AVG(
+                    CASE WHEN ne.elapsed_time > 0 AND json_extract(ne.outputs, '$.usage.completion_tokens') > 0
+                    THEN CAST(json_extract(ne.outputs, '$.usage.completion_tokens') AS REAL) / ne.elapsed_time
+                    ELSE 0 END
+                ) as avg_speed,
                 COUNT(*) as cnt
-             FROM messages
-             WHERE answer_tokens > 0 AND provider_response_latency > 0 AND {}
+             FROM node_executions ne
+             WHERE ne.node_type = 'llm' AND ne.status = 'succeeded' AND {}
              GROUP BY model, day
              ORDER BY model, day",
-            msg_where_q
+            node_speed_where
         );
         let mut model_stmt = conn.prepare(&model_speed_sql).map_err(|e| e.to_string())?;
         let model_token_speed_daily: Vec<ModelDailyTokenSpeed> = model_stmt.query_map([], |row| {
@@ -2602,18 +2639,27 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
-        // Model daily token speed
+        // Model daily token speed from LLM node executions
         let model_speed_sql = format!(
             "SELECT
-                COALESCE(json_extract(message_metadata, '$.model'), 'unknown') as model,
-                date(created_at, 'unixepoch', 'localtime') as day,
-                AVG(CASE WHEN provider_response_latency > 0 THEN CAST(answer_tokens AS REAL) / provider_response_latency ELSE 0 END) as avg_speed,
+                COALESCE(
+                    NULLIF(json_extract(ne.execution_metadata, '$.model_name'), ''),
+                    NULLIF(json_extract(ne.outputs, '$.usage.model_name'), ''),
+                    NULLIF(json_extract(ne.raw_json, '$.model_name'), ''),
+                    'unknown'
+                ) as model,
+                date(ne.created_at, 'unixepoch', 'localtime') as day,
+                AVG(
+                    CASE WHEN ne.elapsed_time > 0 AND json_extract(ne.outputs, '$.usage.completion_tokens') > 0
+                    THEN CAST(json_extract(ne.outputs, '$.usage.completion_tokens') AS REAL) / ne.elapsed_time
+                    ELSE 0 END
+                ) as avg_speed,
                 COUNT(*) as cnt
-             FROM messages
-             WHERE answer_tokens > 0 AND provider_response_latency > 0 AND {}
+             FROM node_executions ne
+             WHERE ne.node_type = 'llm' AND ne.status = 'succeeded' AND {}
              GROUP BY model, day
              ORDER BY model, day",
-            msg_where_q
+            node_where
         );
         let mut model_stmt = conn.prepare(&model_speed_sql).map_err(|e| e.to_string())?;
         let model_token_speed_daily: Vec<ModelDailyTokenSpeed> = model_stmt.query_map([], |row| {
