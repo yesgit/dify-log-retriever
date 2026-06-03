@@ -1011,16 +1011,19 @@ const MODEL_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#e
 function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
   if (!data || data.length === 0) return null;
 
-  // Get unique models and all dates
   const models = [...new Set(data.map(d => d.model))];
   const dates = [...new Set(data.map(d => d.date))].sort();
 
-  // Build pivot: date -> { model -> speed }
+  // Use Map for O(1) lookup; sanitize model name to avoid recharts dot-path issues
+  const dataMap = new Map<string, ModelDailyTokenSpeed>();
+  const safeKey = (m: string) => m.replace(/\./g, '_');
+  for (const d of data) { dataMap.set(`${d.date}::${d.model}`, d); }
+
   const pivot = dates.map(date => {
     const row: Record<string, any> = { date };
     for (const model of models) {
-      const item = data.find(d => d.date === date && d.model === model);
-      row[model] = item ? Number(item.avg_token_speed.toFixed(1)) : null;
+      const item = dataMap.get(`${date}::${model}`);
+      row[safeKey(model)] = item ? Number(item.avg_token_speed.toFixed(1)) : null;
     }
     return row;
   });
@@ -1042,7 +1045,7 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
             <Line
               key={model}
               type="linear"
-              dataKey={model}
+              dataKey={safeKey(model)}
               name={model}
               stroke={MODEL_COLORS[idx % MODEL_COLORS.length]}
               strokeWidth={2}

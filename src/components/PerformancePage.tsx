@@ -560,17 +560,21 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
     const models = [...new Set(data.map(d => d.model))];
     const dates = [...new Set(data.map(d => d.date))].sort();
     const dataMap = new Map<string, ModelDailyTokenSpeed>();
+    // Sanitize model name to avoid recharts dot-path interpretation (e.g. "gpt-4.1" → "gpt-4_1")
+    const safeKey = (m: string) => m.replace(/\./g, '_');
     for (const d of data) { dataMap.set(`${d.date}::${d.model}`, d); }
     const pivot = dates.map(date => {
       const row: Record<string, any> = { date };
       for (const model of models) {
         const item = dataMap.get(`${date}::${model}`);
-        row[model] = item ? Number(item.avg_token_speed.toFixed(1)) : null;
+        row[safeKey(model)] = item ? Number(item.avg_token_speed.toFixed(1)) : null;
       }
       return row;
     });
     return { models, pivot };
   }, [data]);
+
+  const safeKey = (m: string) => m.replace(/\./g, '_');
 
   return (
     <div>
@@ -584,7 +588,7 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
             formatter={(v: any, name: any) => [v !== null && v !== undefined ? `${Number(v).toFixed(1)} t/s` : '无数据', name]} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
           {models.map((model, idx) => (
-            <Line key={model} type="linear" dataKey={model} name={model}
+            <Line key={model} type="linear" dataKey={safeKey(model)} name={model}
               stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
           ))}
         </LineChart>
