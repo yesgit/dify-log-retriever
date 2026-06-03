@@ -1873,7 +1873,7 @@ impl Database {
                 COALESCE(AVG(CASE WHEN elapsed_time > 0 THEN elapsed_time END), 0) as avg_elapsed,
                 COALESCE(AVG(CASE WHEN provider_response_latency > 0 THEN provider_response_latency END), 0) as avg_ttft,
                 COALESCE(AVG(CASE WHEN (elapsed_time > 0 OR provider_response_latency > 0) AND answer_tokens > 0 THEN CAST(answer_tokens AS REAL) / COALESCE(NULLIF(elapsed_time, 0), provider_response_latency) END), 0) as avg_speed,
-                COUNT(*) as cnt
+                SUM(CASE WHEN ((error IS NOT NULL AND error != 'null' AND error != '') OR status = 'error') THEN 1 ELSE 0 END) as err_count
              FROM messages
              WHERE {}
              GROUP BY model
@@ -2756,7 +2756,7 @@ impl Database {
                     COALESCE(a.name, 'Unknown') as app_name,
                     COUNT(*) as msg_count,
                     COALESCE(AVG(
-                        CASE WHEN m.elapsed_time > 0 AND m.answer_tokens > 0
+                        CASE WHEN (m.elapsed_time > 0 OR m.provider_response_latency > 0) AND m.answer_tokens > 0
                         THEN CAST(m.answer_tokens AS REAL) / COALESCE(NULLIF(m.elapsed_time, 0), m.provider_response_latency)
                         END
                     ), 0) as avg_speed,
@@ -2798,7 +2798,7 @@ impl Database {
                     date(m.created_at, 'unixepoch', 'localtime') as day,
                     COUNT(*) as msg_count,
                     COALESCE(AVG(
-                        CASE WHEN m.elapsed_time > 0 AND m.answer_tokens > 0
+                        CASE WHEN (m.elapsed_time > 0 OR m.provider_response_latency > 0) AND m.answer_tokens > 0
                         THEN CAST(m.answer_tokens AS REAL) / COALESCE(NULLIF(m.elapsed_time, 0), m.provider_response_latency)
                         END
                     ), 0) as avg_speed,
