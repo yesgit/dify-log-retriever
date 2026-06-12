@@ -22,7 +22,7 @@ export function ExportPage() {
   // Conversation export state
   const [selectedApp, setSelectedApp] = useState<string>('');
   const [exportType, setExportType] = useState<'conversation' | 'message'>('conversation');
-  const [format, setFormat] = useState<'json' | 'csv' | 'jsonl'>('json');
+  const [format, setFormat] = useState<'xlsx' | 'json' | 'csv' | 'jsonl'>('xlsx');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [keyword, setKeyword] = useState('');
@@ -87,7 +87,9 @@ export function ExportPage() {
     setExportFilePath(null);
     try {
       const ts = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '');
-      const filters: { name: string; extensions: string[] }[] = format === 'csv'
+      const filters: { name: string; extensions: string[] }[] = format === 'xlsx'
+        ? [{ name: 'Excel', extensions: ['xlsx'] }]
+        : format === 'csv'
         ? [{ name: 'CSV', extensions: ['csv'] }]
         : format === 'jsonl'
           ? [{ name: 'JSONL', extensions: ['jsonl'] }]
@@ -152,6 +154,7 @@ export function ExportPage() {
   };
 
   const formats = [
+    { value: 'xlsx' as const, label: 'Excel', desc: '推荐，避免长文本换行破坏记录', icon: <FileSpreadsheet size={20} /> },
     { value: 'json' as const, label: 'JSON', desc: '完整结构化数据', icon: <FileJson size={20} /> },
     { value: 'csv' as const, label: 'CSV', desc: '扁平化表格，适合 Excel', icon: <FileSpreadsheet size={20} /> },
     { value: 'jsonl' as const, label: 'JSONL', desc: '每行一条问答，适合评测框架', icon: <FileText size={20} /> },
@@ -250,7 +253,7 @@ export function ExportPage() {
           {/* Format Selection */}
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h3 className="font-semibold text-gray-900 mb-3">选择导出格式</h3>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-4 gap-3">
               {formats.map((f) => (
                 <button
                   key={f.value}

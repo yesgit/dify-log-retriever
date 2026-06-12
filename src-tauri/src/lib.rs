@@ -647,7 +647,7 @@ fn export_data(
 ) -> Result<String, String> {
     let export_type = export_type.as_deref().unwrap_or("message");
 
-    let content = match export_type {
+    match export_type {
         "message" => {
             let messages = state.db.get_messages_for_export(
                 app_id.as_deref(),
@@ -661,9 +661,13 @@ fn export_data(
             }
 
             match format.as_str() {
-                "json" => export::export_messages_to_json(&messages, include_metadata, include_agent_thoughts)?,
-                "csv" => export::export_messages_to_csv(&messages)?,
-                "jsonl" => export::export_messages_to_jsonl(&messages, include_metadata, include_agent_thoughts)?,
+                "xlsx" => {
+                    let path = save_path.as_deref().map(std::path::Path::new);
+                    return export::export_messages_to_excel(&messages, include_metadata, include_agent_thoughts, path);
+                }
+                "json" => export::export_messages_to_json(&messages, include_metadata, include_agent_thoughts),
+                "csv" => export::export_messages_to_csv(&messages),
+                "jsonl" => export::export_messages_to_jsonl(&messages, include_metadata, include_agent_thoughts),
                 _ => return Err(format!("不支持的格式: {}", format)),
             }
         }
@@ -680,23 +684,28 @@ fn export_data(
             }
 
             match format.as_str() {
-                "json" => export::export_conversations_to_json(&conversations)?,
-                "csv" => export::export_conversations_to_csv(&conversations)?,
-                "jsonl" => export::export_conversations_to_jsonl(&conversations)?,
+                "xlsx" => {
+                    let path = save_path.as_deref().map(std::path::Path::new);
+                    return export::export_conversations_to_excel(&conversations, path);
+                }
+                "json" => export::export_conversations_to_json(&conversations),
+                "csv" => export::export_conversations_to_csv(&conversations),
+                "jsonl" => export::export_conversations_to_jsonl(&conversations),
                 _ => return Err(format!("不支持的格式: {}", format)),
             }
         }
-    };
-
-    if let Some(sp) = save_path {
-        let path = std::path::PathBuf::from(&sp);
-        std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))?;
-        Ok(format!("已导出到: {}", path.display()))
-    } else {
-        let ext = format;
-        let default_filename = format!("dify_export_{}.{}", chrono::Local::now().format("%Y%m%d_%H%M%S"), ext);
-        export::save_export_file_with_dialog(&content, &default_filename, &ext)
     }
+    .and_then(|content| {
+        if let Some(sp) = save_path {
+            let path = std::path::PathBuf::from(&sp);
+            std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))?;
+            Ok(format!("已导出到: {}", path.display()))
+        } else {
+            let ext = format;
+            let default_filename = format!("dify_export_{}.{}", chrono::Local::now().format("%Y%m%d_%H%M%S"), ext);
+            export::save_export_file_with_dialog(&content, &default_filename, &ext)
+        }
+    })
 }
 
 #[tauri::command]

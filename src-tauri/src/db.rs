@@ -1257,8 +1257,6 @@ impl Database {
         let sql = format!(
             "SELECT m.id, m.app_id, m.conversation_id, m.message_id,
              COALESCE(NULLIF(c.from_end_user_session_id, ''), NULLIF(c.from_end_user_id, ''), NULLIF(c.from_source, ''), '') AS user_or_account,
-             COALESCE(c.user_feedback_stats, '{{}}') AS user_feedback_stats,
-             COALESCE(c.admin_feedback_stats, '{{}}') AS admin_feedback_stats,
              m.query, m.answer, m.feedback,
              m.retriever_resources, m.message_metadata, m.agent_thoughts, m.answer_tokens, m.prompt_tokens,
              m.elapsed_time, m.created_at, m.workflow_run_id, m.inputs, m.message_tokens,
@@ -1273,27 +1271,23 @@ impl Database {
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let messages: Vec<ExportMessageRecord> = stmt
             .query_map(param_refs.as_slice(), |row| {
-                let user_feedback_stats: String = row.get(5)?;
-                let admin_feedback_stats: String = row.get(6)?;
-                let feedbacks: String = row.get(21)?;
-                let retriever_resources: String = row.get(10)?;
-                let message_metadata: String = row.get(11)?;
-                let agent_thoughts: String = row.get(12)?;
+                let feedbacks: String = row.get(19)?;
+                let retriever_resources: String = row.get(8)?;
+                let message_metadata: String = row.get(9)?;
+                let agent_thoughts: String = row.get(10)?;
                 Ok(ExportMessageRecord {
                     id: row.get(0)?,
                     message_id: row.get(3)?,
                     conversation_id: row.get(2)?,
                     user_or_account: row.get(4)?,
-                    user_feedback_stats: parse_json(&user_feedback_stats),
-                    admin_feedback_stats: parse_json(&admin_feedback_stats),
                     feedbacks: parse_json(&feedbacks),
-                    query: row.get(7)?,
-                    answer: row.get(8)?,
-                    feedback: row.get(9)?,
-                    answer_tokens: row.get(13)?,
-                    prompt_tokens: row.get(14)?,
-                    elapsed_time: row.get(15)?,
-                    created_at: row.get(16)?,
+                    query: row.get(5)?,
+                    answer: row.get(6)?,
+                    feedback: row.get(7)?,
+                    answer_tokens: row.get(11)?,
+                    prompt_tokens: row.get(12)?,
+                    elapsed_time: row.get(13)?,
+                    created_at: row.get(14)?,
                     message_metadata: parse_json(&message_metadata),
                     retriever_resources: parse_json(&retriever_resources),
                     agent_thoughts: parse_json(&agent_thoughts),

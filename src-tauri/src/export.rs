@@ -6,6 +6,9 @@ use serde_json::json;
 
 use crate::models::{DashboardStats, ExportConversationRecord, ExportMessageRecord, FeedbackMessage, NodeEvalRecord, PerformanceStats, StatDistribution};
 
+const EXCEL_CELL_MAX_CHARS: usize = 32_767;
+const EXCEL_TRUNCATION_SUFFIX: &str = " [truncated]";
+
 pub fn export_conversations_to_json(messages: &[ExportConversationRecord]) -> Result<String, String> {
     let data: Vec<serde_json::Value> = messages
         .iter()
@@ -42,6 +45,75 @@ pub fn export_conversations_to_csv(messages: &[ExportConversationRecord]) -> Res
     }
 
     Ok(lines.join("\n"))
+}
+
+pub fn export_conversations_to_excel(messages: &[ExportConversationRecord], save_path: Option<&std::path::Path>) -> Result<String, String> {
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet().set_name("会话导出").map_err(|e| e.to_string())?;
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0x4472C4))
+        .set_font_color(Color::White)
+        .set_border(FormatBorder::Thin)
+        .set_text_wrap();
+
+    let normal_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Top);
+
+    let number_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Top)
+        .set_num_format("0");
+
+    let headers = [
+        ("标题", 28.0),
+        ("用户或账户", 22.0),
+        ("成功消息数", 12.0),
+        ("失败消息数", 12.0),
+        ("消息数", 10.0),
+        ("用户赞", 10.0),
+        ("用户踩", 10.0),
+        ("管理员赞", 10.0),
+        ("管理员踩", 10.0),
+        ("更新时间", 20.0),
+        ("创建时间", 20.0),
+    ];
+
+    for (col, (header, width)) in headers.iter().enumerate() {
+        worksheet.set_column_width(col as u16, *width).map_err(|e| e.to_string())?;
+        worksheet.write_string_with_format(0, col as u16, *header, &header_format).map_err(|e| e.to_string())?;
+    }
+
+    for (row_idx, m) in messages.iter().enumerate() {
+        let row = (row_idx + 1) as u32;
+        let (success_count, failure_count, _partial_success_count) = status_counts(&m.status_count);
+        let (user_like, user_dislike) = feedback_counts(&m.user_feedback_stats);
+        let (admin_like, admin_dislike) = feedback_counts(&m.admin_feedback_stats);
+
+        worksheet.write_string_with_format(row, 0, &sanitize_excel_text(&m.title), &normal_format).map_err(|e| e.to_string())?;
+        worksheet.write_string_with_format(row, 1, &sanitize_excel_text(&m.user_or_account), &normal_format).map_err(|e| e.to_string())?;
+        worksheet.write_number_with_format(row, 2, success_count as f64, &number_format).map_err(|e| e.to_string())?;
+        worksheet.write_number_with_format(row, 3, failure_count as f64, &number_format).map_err(|e| e.to_string())?;
+        worksheet.write_number_with_format(row, 4, m.message_count as f64, &number_format).map_err(|e| e.to_string())?;
+        worksheet.write_number_with_format(row, 5, user_like as f64, &number_format).map_err(|e| e.to_string())?;
+        worksheet.write_number_with_format(row, 6, user_dislike as f64, &number_format).map_err(|e| e.to_string())?;
+        worksheet.write_number_with_format(row, 7, admin_like as f64, &number_format).map_err(|e| e.to_string())?;
+        worksheet.write_number_with_format(row, 8, admin_dislike as f64, &number_format).map_err(|e| e.to_string())?;
+        worksheet.write_string_with_format(row, 9, &format_timestamp(m.updated_at), &normal_format).map_err(|e| e.to_string())?;
+        worksheet.write_string_with_format(row, 10, &format_timestamp(m.created_at), &normal_format).map_err(|e| e.to_string())?;
+    }
+
+    if !messages.is_empty() {
+        worksheet.autofilter(0, 0, messages.len() as u32, 10).map_err(|e| e.to_string())?;
+    }
+    worksheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+
+    let default_filename = format!("conversation_export_{}.xlsx", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let path = save_path.map(|p| p.to_path_buf()).unwrap_or_else(|| pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename)));
+    workbook.save(&path).map_err(|e| format!("保存 Excel 失败: {}", e))?;
+    Ok(format!("已导出到: {}", path.display()))
 }
 
 fn escape_csv(s: &str) -> String {
@@ -99,25 +171,141 @@ pub fn export_messages_to_json(messages: &[ExportMessageRecord], include_metadat
 
 pub fn export_messages_to_csv(messages: &[ExportMessageRecord]) -> Result<String, String> {
     let mut lines: Vec<String> = vec![
-        "\"id\",\"message_id\",\"conversation_id\",\"user_or_account\",\"用户赞\",\"用户踩\",\"管理员赞\",\"管理员踩\",\"用户反馈内容\",\"query\",\"answer\",\"feedback\",\"answer_tokens\",\"prompt_tokens\",\"elapsed_time\",\"created_at\"".to_string()
+        "\"id\",\"message_id\",\"conversation_id\",\"user_or_account\",\"用户赞\",\"用户踩\",\"用户反馈内容\",\"query\",\"answer\",\"feedback\",\"answer_tokens\",\"prompt_tokens\",\"elapsed_time\",\"created_at\"".to_string()
     ];
 
     for m in messages {
         let query = escape_csv(&m.query);
         let answer = escape_csv(&m.answer);
         let feedback = m.feedback.as_deref().unwrap_or("");
-        let (user_like, user_dislike) = feedback_counts(&m.user_feedback_stats);
-        let (admin_like, admin_dislike) = feedback_counts(&m.admin_feedback_stats);
+        let (user_like, user_dislike) = message_feedback_counts(m.feedback.as_deref(), &m.feedbacks);
         let feedback_content = escape_csv(&extract_feedback_content(&m.feedbacks));
         let created_at = format_timestamp(m.created_at);
         lines.push(format!(
-            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
-            m.id, m.message_id, m.conversation_id, escape_csv(&m.user_or_account), user_like, user_dislike, admin_like, admin_dislike, feedback_content, query, answer, feedback,
+            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
+            m.id, m.message_id, m.conversation_id, escape_csv(&m.user_or_account), user_like, user_dislike, feedback_content, query, answer, feedback,
             m.answer_tokens, m.prompt_tokens, m.elapsed_time, created_at
         ));
     }
 
     Ok(lines.join("\n"))
+}
+
+pub fn export_messages_to_excel(
+    messages: &[ExportMessageRecord],
+    include_metadata: bool,
+    include_agent_thoughts: bool,
+    save_path: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet().set_name("消息导出").map_err(|e| e.to_string())?;
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0x4472C4))
+        .set_font_color(Color::White)
+        .set_border(FormatBorder::Thin)
+        .set_text_wrap();
+
+    let normal_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Top);
+
+    let number_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Top)
+        .set_num_format("0");
+
+    let float_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Top)
+        .set_num_format("0.00");
+
+    let mut headers: Vec<(&str, f64)> = vec![
+        ("id", 28.0),
+        ("message_id", 28.0),
+        ("conversation_id", 28.0),
+        ("user_or_account", 22.0),
+        ("用户赞", 10.0),
+        ("用户踩", 10.0),
+        ("用户反馈内容", 24.0),
+        ("query", 32.0),
+        ("answer", 48.0),
+        ("feedback", 10.0),
+        ("answer_tokens", 13.0),
+        ("prompt_tokens", 13.0),
+        ("elapsed_time", 12.0),
+        ("created_at", 20.0),
+    ];
+
+    if include_metadata {
+        headers.push(("metadata", 32.0));
+        headers.push(("retriever_resources", 32.0));
+    }
+    if include_agent_thoughts {
+        headers.push(("agent_thoughts", 32.0));
+    }
+
+    for (col, (header, width)) in headers.iter().enumerate() {
+        worksheet.set_column_width(col as u16, *width).map_err(|e| e.to_string())?;
+        worksheet.write_string_with_format(0, col as u16, *header, &header_format).map_err(|e| e.to_string())?;
+    }
+
+    for (row_idx, m) in messages.iter().enumerate() {
+        let row = (row_idx + 1) as u32;
+        let (user_like, user_dislike) = message_feedback_counts(m.feedback.as_deref(), &m.feedbacks);
+        let feedback_content = sanitize_excel_text(&extract_feedback_content(&m.feedbacks));
+        let mut col = 0u16;
+
+        worksheet.write_string_with_format(row, col, &m.id, &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_string_with_format(row, col, &m.message_id, &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_string_with_format(row, col, &m.conversation_id, &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_string_with_format(row, col, &sanitize_excel_text(&m.user_or_account), &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_number_with_format(row, col, user_like as f64, &number_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_number_with_format(row, col, user_dislike as f64, &number_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_string_with_format(row, col, &feedback_content, &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_string_with_format(row, col, &sanitize_excel_text(&m.query), &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_string_with_format(row, col, &sanitize_excel_text(&m.answer), &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_string_with_format(row, col, m.feedback.as_deref().unwrap_or(""), &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_number_with_format(row, col, m.answer_tokens as f64, &number_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_number_with_format(row, col, m.prompt_tokens as f64, &number_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_number_with_format(row, col, m.elapsed_time, &float_format).map_err(|e| e.to_string())?;
+        col += 1;
+        worksheet.write_string_with_format(row, col, &format_timestamp(m.created_at), &normal_format).map_err(|e| e.to_string())?;
+        col += 1;
+
+        if include_metadata {
+            worksheet.write_string_with_format(row, col, &sanitize_excel_text(&m.message_metadata.to_string()), &normal_format).map_err(|e| e.to_string())?;
+            col += 1;
+            worksheet.write_string_with_format(row, col, &sanitize_excel_text(&m.retriever_resources.to_string()), &normal_format).map_err(|e| e.to_string())?;
+            col += 1;
+        }
+        if include_agent_thoughts {
+            worksheet.write_string_with_format(row, col, &sanitize_excel_text(&m.agent_thoughts.to_string()), &normal_format).map_err(|e| e.to_string())?;
+        }
+    }
+
+    if !messages.is_empty() {
+        worksheet.autofilter(0, 0, messages.len() as u32, (headers.len() - 1) as u16).map_err(|e| e.to_string())?;
+    }
+    worksheet.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+
+    let default_filename = format!("message_export_{}.xlsx", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let path = save_path.map(|p| p.to_path_buf()).unwrap_or_else(|| pick_save_path(&default_filename).unwrap_or_else(|_| std::path::PathBuf::from(&default_filename)));
+    workbook.save(&path).map_err(|e| format!("保存 Excel 失败: {}", e))?;
+    Ok(format!("已导出到: {}", path.display()))
 }
 
 pub fn export_messages_to_jsonl(messages: &[ExportMessageRecord], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
@@ -132,15 +320,14 @@ pub fn export_messages_to_jsonl(messages: &[ExportMessageRecord], include_metada
 }
 
 fn message_to_json(m: &ExportMessageRecord, include_metadata: bool, include_agent_thoughts: bool) -> serde_json::Value {
+    let (user_like, user_dislike) = message_feedback_counts(m.feedback.as_deref(), &m.feedbacks);
     let mut obj = json!({
         "id": m.id,
         "message_id": m.message_id,
         "conversation_id": m.conversation_id,
         "user_or_account": m.user_or_account,
-        "user_feedback_like": feedback_counts(&m.user_feedback_stats).0,
-        "user_feedback_dislike": feedback_counts(&m.user_feedback_stats).1,
-        "admin_feedback_like": feedback_counts(&m.admin_feedback_stats).0,
-        "admin_feedback_dislike": feedback_counts(&m.admin_feedback_stats).1,
+        "user_feedback_like": user_like,
+        "user_feedback_dislike": user_dislike,
         "user_feedback_content": extract_feedback_content(&m.feedbacks),
         "query": m.query,
         "answer": m.answer,
@@ -168,6 +355,56 @@ fn feedback_counts(stats: &serde_json::Value) -> (i64, i64) {
     let like = stats.get("like").and_then(|v| v.as_i64()).unwrap_or(0);
     let dislike = stats.get("dislike").and_then(|v| v.as_i64()).unwrap_or(0);
     (like, dislike)
+}
+
+fn message_feedback_counts(feedback: Option<&str>, feedbacks: &serde_json::Value) -> (i64, i64) {
+    match feedback
+        .and_then(normalize_feedback_rating)
+        .or_else(|| first_feedback_rating(feedbacks))
+    {
+        Some("like") => (1, 0),
+        Some("dislike") => (0, 1),
+        _ => (0, 0),
+    }
+}
+
+fn normalize_feedback_rating(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "like" | "liked" | "upvote" | "thumbsup" | "thumbs_up" | "positive" => Some("like"),
+        "dislike" | "disliked" | "downvote" | "thumbsdown" | "thumbs_down" | "negative" => Some("dislike"),
+        _ => None,
+    }
+}
+
+fn first_feedback_rating(feedbacks: &serde_json::Value) -> Option<&'static str> {
+    feedbacks
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| {
+            item.get("rating")
+                .or_else(|| item.get("value"))
+                .or_else(|| item.get("type"))
+                .and_then(|v| v.as_str())
+        })
+        .and_then(normalize_feedback_rating)
+}
+
+fn flatten_excel_text(value: &str) -> String {
+    value.replace("\r\n", " ").replace(['\r', '\n'], " ")
+}
+
+fn sanitize_excel_text(value: &str) -> String {
+    let flattened = flatten_excel_text(value);
+    let char_count = flattened.chars().count();
+    if char_count <= EXCEL_CELL_MAX_CHARS {
+        return flattened;
+    }
+
+    let suffix_len = EXCEL_TRUNCATION_SUFFIX.chars().count();
+    let keep_len = EXCEL_CELL_MAX_CHARS.saturating_sub(suffix_len);
+    let mut truncated: String = flattened.chars().take(keep_len).collect();
+    truncated.push_str(EXCEL_TRUNCATION_SUFFIX);
+    truncated
 }
 
 fn status_counts(status_count: &serde_json::Value) -> (i64, i64, i64) {

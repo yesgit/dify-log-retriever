@@ -552,8 +552,6 @@ pub struct ExportMessageRecord {
     pub message_id: String,
     pub conversation_id: String,
     pub user_or_account: String,
-    pub user_feedback_stats: serde_json::Value,
-    pub admin_feedback_stats: serde_json::Value,
     pub feedbacks: serde_json::Value,
     pub query: String,
     pub answer: String,
