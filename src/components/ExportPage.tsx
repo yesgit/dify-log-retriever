@@ -21,6 +21,7 @@ export function ExportPage() {
 
   // Conversation export state
   const [selectedApp, setSelectedApp] = useState<string>('');
+  const [exportType, setExportType] = useState<'conversation' | 'message'>('conversation');
   const [format, setFormat] = useState<'json' | 'csv' | 'jsonl'>('json');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -93,11 +94,12 @@ export function ExportPage() {
           : [{ name: 'JSON', extensions: ['json'] }];
       const ext = format;
       const filePath = await save({
-        defaultPath: `dify_export_${ts}.${ext}`,
+        defaultPath: `dify_${exportType}_export_${ts}.${ext}`,
         filters,
       });
       if (!filePath) { setExporting(false); return; }
       const result = await invoke<string>('export_data', {
+        exportType,
         format,
         appId: selectedApp || null,
         startDate: startDate || null,
@@ -217,6 +219,34 @@ export function ExportPage() {
 
       {activeTab === 'conversation' ? (
         <div className="space-y-6">
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h3 className="font-semibold text-gray-900 mb-3">选择导出内容</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => setExportType('conversation')}
+                className={`p-4 rounded-lg border-2 text-left transition-colors ${
+                  exportType === 'conversation'
+                    ? 'border-blue-500 bg-blue-50'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <p className="font-medium text-sm text-gray-900">会话导出</p>
+                <p className="text-xs text-gray-500 mt-0.5">导出标题、账户、状态、反馈、时间等会话汇总字段</p>
+              </button>
+              <button
+                onClick={() => setExportType('message')}
+                className={`p-4 rounded-lg border-2 text-left transition-colors ${
+                  exportType === 'message'
+                    ? 'border-blue-500 bg-blue-50'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <p className="font-medium text-sm text-gray-900">消息导出</p>
+                <p className="text-xs text-gray-500 mt-0.5">导出 query、answer、tokens、元数据等消息明细</p>
+              </button>
+            </div>
+          </div>
+
           {/* Format Selection */}
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h3 className="font-semibold text-gray-900 mb-3">选择导出格式</h3>
@@ -297,6 +327,7 @@ export function ExportPage() {
                     type="checkbox"
                     checked={includeMetadata}
                     onChange={(e) => setIncludeMetadata(e.target.checked)}
+                    disabled={exportType === 'conversation'}
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
                   包含元数据 (tokens, 耗时等)
@@ -306,11 +337,15 @@ export function ExportPage() {
                     type="checkbox"
                     checked={includeAgentThoughts}
                     onChange={(e) => setIncludeAgentThoughts(e.target.checked)}
+                    disabled={exportType === 'conversation'}
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
                   包含 Agent 思维链
                 </label>
               </div>
+              {exportType === 'conversation' && (
+                <p className="text-xs text-gray-500">会话导出固定输出会话汇总字段，元数据与思维链选项仅对消息导出有效。</p>
+              )}
             </div>
           </div>
 

@@ -635,6 +635,7 @@ fn get_performance_stats(
 #[allow(clippy::too_many_arguments)]
 fn export_data(
     state: State<AppState>,
+    export_type: Option<String>,
     format: String,
     app_id: Option<String>,
     start_date: Option<String>,
@@ -644,22 +645,47 @@ fn export_data(
     include_agent_thoughts: bool,
     save_path: Option<String>,
 ) -> Result<String, String> {
-    let messages = state.db.get_messages_for_export(
-        app_id.as_deref(),
-        start_date.as_deref(),
-        end_date.as_deref(),
-        keyword.as_deref(),
-    )?;
+    let export_type = export_type.as_deref().unwrap_or("message");
 
-    if messages.is_empty() {
-        return Err("没有找到匹配的数据".to_string());
-    }
+    let content = match export_type {
+        "message" => {
+            let messages = state.db.get_messages_for_export(
+                app_id.as_deref(),
+                start_date.as_deref(),
+                end_date.as_deref(),
+                keyword.as_deref(),
+            )?;
 
-    let content = match format.as_str() {
-        "json" => export::export_to_json(&messages, include_metadata, include_agent_thoughts)?,
-        "csv" => export::export_to_csv(&messages)?,
-        "jsonl" => export::export_to_jsonl(&messages, include_metadata, include_agent_thoughts)?,
-        _ => return Err(format!("不支持的格式: {}", format)),
+            if messages.is_empty() {
+                return Err("没有找到匹配的消息数据".to_string());
+            }
+
+            match format.as_str() {
+                "json" => export::export_messages_to_json(&messages, include_metadata, include_agent_thoughts)?,
+                "csv" => export::export_messages_to_csv(&messages)?,
+                "jsonl" => export::export_messages_to_jsonl(&messages, include_metadata, include_agent_thoughts)?,
+                _ => return Err(format!("不支持的格式: {}", format)),
+            }
+        }
+        _ => {
+            let conversations = state.db.get_conversations_for_export(
+                app_id.as_deref(),
+                start_date.as_deref(),
+                end_date.as_deref(),
+                keyword.as_deref(),
+            )?;
+
+            if conversations.is_empty() {
+                return Err("没有找到匹配的会话数据".to_string());
+            }
+
+            match format.as_str() {
+                "json" => export::export_conversations_to_json(&conversations)?,
+                "csv" => export::export_conversations_to_csv(&conversations)?,
+                "jsonl" => export::export_conversations_to_jsonl(&conversations)?,
+                _ => return Err(format!("不支持的格式: {}", format)),
+            }
+        }
     };
 
     if let Some(sp) = save_path {

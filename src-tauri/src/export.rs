@@ -4,49 +4,39 @@ use std::path::PathBuf;
 use rust_xlsxwriter::*;
 use serde_json::json;
 
-use crate::models::{DashboardStats, ExportMessageRecord, FeedbackMessage, NodeEvalRecord, PerformanceStats, StatDistribution};
+use crate::models::{DashboardStats, ExportConversationRecord, ExportMessageRecord, FeedbackMessage, NodeEvalRecord, PerformanceStats, StatDistribution};
 
-pub fn export_to_json(messages: &[ExportMessageRecord], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
+pub fn export_conversations_to_json(messages: &[ExportConversationRecord]) -> Result<String, String> {
     let data: Vec<serde_json::Value> = messages
         .iter()
-        .map(|m| message_to_json(m, include_metadata, include_agent_thoughts))
+        .map(conversation_to_json)
         .collect();
     serde_json::to_string_pretty(&data).map_err(|e| e.to_string())
 }
 
-pub fn export_to_csv(messages: &[ExportMessageRecord]) -> Result<String, String> {
+pub fn export_conversations_to_csv(messages: &[ExportConversationRecord]) -> Result<String, String> {
     let mut lines: Vec<String> = vec![
-        "\"标题\",\"用户或账户\",\"状态\",\"消息数\",\"用户反馈\",\"管理员反馈\",\"更新时间\",\"创建时间\",\"消息时间\",\"message_id\",\"conversation_id\",\"query\",\"answer\",\"feedback\",\"answer_tokens\",\"prompt_tokens\",\"elapsed_time\"".to_string()
+        "\"标题\",\"用户或账户\",\"状态\",\"消息数\",\"用户赞\",\"用户踩\",\"管理员赞\",\"管理员踩\",\"更新时间\",\"创建时间\"".to_string()
     ];
 
     for m in messages {
-        let query = escape_csv(&m.query);
-        let answer = escape_csv(&m.answer);
-        let feedback = m.feedback.as_deref().unwrap_or("");
-        let user_feedback = escape_csv(&json_text(&m.user_feedback));
-        let admin_feedback = escape_csv(&json_text(&m.admin_feedback));
+        let status = escape_csv(&format_status(&m.status_count));
+        let (user_like, user_dislike) = feedback_counts(&m.user_feedback_stats);
+        let (admin_like, admin_dislike) = feedback_counts(&m.admin_feedback_stats);
         let updated_at = format_timestamp(m.updated_at);
-        let created_at = format_timestamp(m.conversation_created_at);
-        let message_time = format_timestamp(m.created_at);
+        let created_at = format_timestamp(m.created_at);
         lines.push(format!(
-            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
+            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
             escape_csv(&m.title),
             escape_csv(&m.user_or_account),
-            escape_csv(&m.status),
+            status,
             m.message_count,
-            user_feedback,
-            admin_feedback,
+            user_like,
+            user_dislike,
+            admin_like,
+            admin_dislike,
             updated_at,
-            created_at,
-            message_time,
-            m.message_id,
-            m.conversation_id,
-            query,
-            answer,
-            feedback,
-            m.answer_tokens,
-            m.prompt_tokens,
-            m.elapsed_time
+            created_at
         ));
     }
 
@@ -59,7 +49,70 @@ fn escape_csv(s: &str) -> String {
         .replace('\r', "\\r")
 }
 
-pub fn export_to_jsonl(messages: &[ExportMessageRecord], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
+pub fn export_conversations_to_jsonl(messages: &[ExportConversationRecord]) -> Result<String, String> {
+    let lines: Vec<String> = messages
+        .iter()
+        .map(|m| {
+            let obj = conversation_to_json(m);
+            serde_json::to_string(&obj).unwrap_or_default()
+        })
+        .collect();
+    Ok(lines.join("\n"))
+}
+
+fn conversation_to_json(m: &ExportConversationRecord) -> serde_json::Value {
+    let (user_like, user_dislike) = feedback_counts(&m.user_feedback_stats);
+    let (admin_like, admin_dislike) = feedback_counts(&m.admin_feedback_stats);
+
+    json!({
+        "id": m.id,
+        "title": m.title,
+        "user_or_account": m.user_or_account,
+        "status": format_status(&m.status_count),
+        "message_count": m.message_count,
+        "user_feedback_like": user_like,
+        "user_feedback_dislike": user_dislike,
+        "admin_feedback_like": admin_like,
+        "admin_feedback_dislike": admin_dislike,
+        "updated_at": m.updated_at,
+        "updated_at_human": format_timestamp(m.updated_at),
+        "created_at": m.created_at,
+        "created_at_human": format_timestamp(m.created_at),
+        "conversation_id": m.conversation_id,
+        "raw_user_feedback_stats": m.user_feedback_stats,
+        "raw_admin_feedback_stats": m.admin_feedback_stats,
+        "raw_status_count": m.status_count,
+    })
+}
+
+pub fn export_messages_to_json(messages: &[ExportMessageRecord], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
+    let data: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| message_to_json(m, include_metadata, include_agent_thoughts))
+        .collect();
+    serde_json::to_string_pretty(&data).map_err(|e| e.to_string())
+}
+
+pub fn export_messages_to_csv(messages: &[ExportMessageRecord]) -> Result<String, String> {
+    let mut lines: Vec<String> = vec![
+        "\"id\",\"message_id\",\"conversation_id\",\"query\",\"answer\",\"feedback\",\"answer_tokens\",\"prompt_tokens\",\"elapsed_time\",\"created_at\"".to_string()
+    ];
+
+    for m in messages {
+        let query = escape_csv(&m.query);
+        let answer = escape_csv(&m.answer);
+        let feedback = m.feedback.as_deref().unwrap_or("");
+        lines.push(format!(
+            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
+            m.id, m.message_id, m.conversation_id, query, answer, feedback,
+            m.answer_tokens, m.prompt_tokens, m.elapsed_time, m.created_at
+        ));
+    }
+
+    Ok(lines.join("\n"))
+}
+
+pub fn export_messages_to_jsonl(messages: &[ExportMessageRecord], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
     let lines: Vec<String> = messages
         .iter()
         .map(|m| {
@@ -71,31 +124,14 @@ pub fn export_to_jsonl(messages: &[ExportMessageRecord], include_metadata: bool,
 }
 
 fn message_to_json(m: &ExportMessageRecord, include_metadata: bool, include_agent_thoughts: bool) -> serde_json::Value {
-    let created_at_human = format_timestamp(m.created_at);
-    let updated_at_human = format_timestamp(m.updated_at);
-    let conversation_created_at_human = format_timestamp(m.conversation_created_at);
-
     let mut obj = json!({
         "id": m.id,
-        "title": m.title,
-        "user_or_account": m.user_or_account,
-        "status": m.status,
-        "message_count": m.message_count,
-        "user_feedback": m.user_feedback,
-        "admin_feedback": m.admin_feedback,
-        "updated_at": m.updated_at,
-        "updated_at_human": updated_at_human,
-        "conversation_updated_at_human": updated_at_human,
-        "conversation_created_at": m.conversation_created_at,
-        "conversation_created_at_human": conversation_created_at_human,
         "message_id": m.message_id,
         "conversation_id": m.conversation_id,
         "query": m.query,
         "answer": m.answer,
         "feedback": m.feedback,
         "created_at": m.created_at,
-        "created_at_human": created_at_human,
-        "message_created_at_human": created_at_human,
     });
 
     if include_metadata {
@@ -113,14 +149,37 @@ fn message_to_json(m: &ExportMessageRecord, include_metadata: bool, include_agen
     obj
 }
 
-fn json_text(v: &serde_json::Value) -> String {
-    if v.is_null() {
-        return String::new();
+fn feedback_counts(stats: &serde_json::Value) -> (i64, i64) {
+    let like = stats.get("like").and_then(|v| v.as_i64()).unwrap_or(0);
+    let dislike = stats.get("dislike").and_then(|v| v.as_i64()).unwrap_or(0);
+    (like, dislike)
+}
+
+fn format_status(status_count: &serde_json::Value) -> String {
+    let success = status_count.get("success").and_then(|v| v.as_i64()).unwrap_or(0);
+    let failed = status_count.get("failed").and_then(|v| v.as_i64()).unwrap_or(0);
+    let partial_success = status_count.get("partial_success").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    let mut parts = Vec::new();
+    if success > 0 {
+        if success == 1 && failed == 0 && partial_success == 0 {
+            parts.push("Success".to_string());
+        } else {
+            parts.push(format!("{} Success", success));
+        }
     }
-    if let Some(s) = v.as_str() {
-        return s.to_string();
+    if failed > 0 {
+        parts.push(format!("{} Failure", failed));
     }
-    serde_json::to_string(v).unwrap_or_default()
+    if partial_success > 0 {
+        parts.push(format!("{} Partial Success", partial_success));
+    }
+
+    if parts.is_empty() {
+        return "N/A".to_string();
+    }
+
+    parts.join(", ")
 }
 
 /// Save export file using a native save dialog, with fallback to Downloads directory.

@@ -533,6 +533,20 @@ pub struct ConversationsResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportConversationRecord {
+    pub id: String,
+    pub conversation_id: String,
+    pub title: String,
+    pub user_or_account: String,
+    pub message_count: i64,
+    pub user_feedback_stats: serde_json::Value,
+    pub admin_feedback_stats: serde_json::Value,
+    pub status_count: serde_json::Value,
+    pub updated_at: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportMessageRecord {
     pub id: String,
     pub message_id: String,
@@ -543,21 +557,10 @@ pub struct ExportMessageRecord {
     pub answer_tokens: i64,
     pub prompt_tokens: i64,
     pub elapsed_time: f64,
-    // Message-level timestamp.
     pub created_at: i64,
     pub message_metadata: serde_json::Value,
     pub retriever_resources: serde_json::Value,
     pub agent_thoughts: serde_json::Value,
-    pub title: String,
-    pub user_or_account: String,
-    pub status: String,
-    pub message_count: i64,
-    pub user_feedback: serde_json::Value,
-    pub admin_feedback: serde_json::Value,
-    // Conversation-level timestamp.
-    pub updated_at: i64,
-    // Conversation-level timestamp.
-    pub conversation_created_at: i64,
 }
 
 // ===== Node Eval Export =====
