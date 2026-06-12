@@ -1228,94 +1228,82 @@ impl Database {
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if let Some(aid) = app_id {
-            conditions.push("app_id = ?".to_string());
+            conditions.push("m.app_id = ?".to_string());
             params.push(Box::new(aid.to_string()));
         }
         if let Some(sd) = start_date {
             if !sd.is_empty() {
-                conditions.push("created_at >= strftime('%s', ?)".to_string());
+                conditions.push("m.created_at >= strftime('%s', ?)".to_string());
                 params.push(Box::new(sd.to_string()));
             }
         }
         if let Some(ed) = end_date {
             if !ed.is_empty() {
-                conditions.push("created_at < strftime('%s', ?, '+1 day')".to_string());
+                conditions.push("m.created_at < strftime('%s', ?, '+1 day')".to_string());
                 params.push(Box::new(ed.to_string()));
             }
         }
         if let Some(kw) = keyword {
             if !kw.is_empty() {
-                conditions.push("(query LIKE ? OR answer LIKE ?)".to_string());
+                conditions.push("(m.query LIKE ? OR m.answer LIKE ? OR c.from_end_user_id LIKE ? OR c.from_end_user_session_id LIKE ?)".to_string());
                 let pattern = format!("%{}%", kw);
+                params.push(Box::new(pattern.clone()));
+                params.push(Box::new(pattern.clone()));
                 params.push(Box::new(pattern.clone()));
                 params.push(Box::new(pattern));
             }
         }
 
         let sql = format!(
-            "SELECT id, app_id, conversation_id, message_id, query, answer, feedback,
+            "SELECT m.id, m.app_id, m.conversation_id, m.message_id,
+             COALESCE(NULLIF(c.from_end_user_session_id, ''), NULLIF(c.from_end_user_id, ''), NULLIF(c.from_source, ''), '') AS user_or_account,
+             COALESCE(c.user_feedback_stats, '{{}}') AS user_feedback_stats,
+             COALESCE(c.admin_feedback_stats, '{{}}') AS admin_feedback_stats,
+             m.query, m.answer, m.feedback,
              retriever_resources, message_metadata, agent_thoughts, answer_tokens, prompt_tokens,
              elapsed_time, created_at, workflow_run_id, inputs, message_tokens,
              provider_response_latency, feedbacks, annotation, annotation_hit_history,
              message_files, status, error, parent_message_id, raw_json
-             FROM messages WHERE {} ORDER BY created_at ASC",
+             FROM messages m
+             LEFT JOIN conversations c ON c.app_id = m.app_id AND c.conversation_id = m.conversation_id
+             WHERE {} ORDER BY m.created_at ASC",
             conditions.join(" AND ")
         );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let messages: Vec<Message> = stmt
+        let messages: Vec<ExportMessageRecord> = stmt
             .query_map(param_refs.as_slice(), |row| {
-                Ok(Message {
+                let user_feedback_stats: String = row.get(5)?;
+                let admin_feedback_stats: String = row.get(6)?;
+                let feedbacks: String = row.get(21)?;
+                let retriever_resources: String = row.get(10)?;
+                let message_metadata: String = row.get(11)?;
+                let agent_thoughts: String = row.get(12)?;
+                Ok(ExportMessageRecord {
                     id: row.get(0)?,
-                    app_id: row.get(1)?,
-                    conversation_id: row.get(2)?,
                     message_id: row.get(3)?,
-                    query: row.get(4)?,
-                    answer: row.get(5)?,
-                    feedback: row.get(6)?,
-                    retriever_resources: row.get(7)?,
-                    message_metadata: row.get(8)?,
-                    agent_thoughts: row.get(9)?,
-                    answer_tokens: row.get(10)?,
-                    prompt_tokens: row.get(11)?,
-                    elapsed_time: row.get(12)?,
-                    created_at: row.get(13)?,
-                    workflow_run_id: row.get(14)?,
-                    inputs: row.get(15)?,
-                    message_tokens: row.get(16)?,
-                    provider_response_latency: row.get(17)?,
-                    feedbacks: row.get(18)?,
-                    annotation: row.get(19)?,
-                    annotation_hit_history: row.get(20)?,
-                    message_files: row.get(21)?,
-                    status: row.get(22)?,
-                    error: row.get(23)?,
-                    parent_message_id: row.get(24)?,
-                    raw_json: row.get(25)?,
+                    conversation_id: row.get(2)?,
+                    user_or_account: row.get(4)?,
+                    user_feedback_stats: parse_json(&user_feedback_stats),
+                    admin_feedback_stats: parse_json(&admin_feedback_stats),
+                    feedbacks: parse_json(&feedbacks),
+                    query: row.get(7)?,
+                    answer: row.get(8)?,
+                    feedback: row.get(9)?,
+                    answer_tokens: row.get(13)?,
+                    prompt_tokens: row.get(14)?,
+                    elapsed_time: row.get(15)?,
+                    created_at: row.get(16)?,
+                    message_metadata: parse_json(&message_metadata),
+                    retriever_resources: parse_json(&retriever_resources),
+                    agent_thoughts: parse_json(&agent_thoughts),
                 })
             })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
 
-        Ok(messages
-            .into_iter()
-            .map(|m| ExportMessageRecord {
-                id: m.id,
-                message_id: m.message_id,
-                conversation_id: m.conversation_id,
-                query: m.query,
-                answer: m.answer,
-                feedback: m.feedback,
-                answer_tokens: m.answer_tokens,
-                prompt_tokens: m.prompt_tokens,
-                elapsed_time: m.elapsed_time,
-                created_at: m.created_at,
-                message_metadata: parse_json(&m.message_metadata),
-                retriever_resources: parse_json(&m.retriever_resources),
-                agent_thoughts: parse_json(&m.agent_thoughts),
-            })
-            .collect())
+        Ok(messages)
     }
 
     // ===== Feedback Messages =====

@@ -16,20 +16,21 @@ pub fn export_conversations_to_json(messages: &[ExportConversationRecord]) -> Re
 
 pub fn export_conversations_to_csv(messages: &[ExportConversationRecord]) -> Result<String, String> {
     let mut lines: Vec<String> = vec![
-        "\"标题\",\"用户或账户\",\"状态\",\"消息数\",\"用户赞\",\"用户踩\",\"管理员赞\",\"管理员踩\",\"更新时间\",\"创建时间\"".to_string()
+        "\"标题\",\"用户或账户\",\"成功消息数\",\"失败消息数\",\"消息数\",\"用户赞\",\"用户踩\",\"管理员赞\",\"管理员踩\",\"更新时间\",\"创建时间\"".to_string()
     ];
 
     for m in messages {
-        let status = escape_csv(&format_status(&m.status_count));
+        let (success_count, failure_count, _partial_success_count) = status_counts(&m.status_count);
         let (user_like, user_dislike) = feedback_counts(&m.user_feedback_stats);
         let (admin_like, admin_dislike) = feedback_counts(&m.admin_feedback_stats);
         let updated_at = format_timestamp(m.updated_at);
         let created_at = format_timestamp(m.created_at);
         lines.push(format!(
-            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
+            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
             escape_csv(&m.title),
             escape_csv(&m.user_or_account),
-            status,
+            success_count,
+            failure_count,
             m.message_count,
             user_like,
             user_dislike,
@@ -61,6 +62,7 @@ pub fn export_conversations_to_jsonl(messages: &[ExportConversationRecord]) -> R
 }
 
 fn conversation_to_json(m: &ExportConversationRecord) -> serde_json::Value {
+    let (success_count, failure_count, partial_success_count) = status_counts(&m.status_count);
     let (user_like, user_dislike) = feedback_counts(&m.user_feedback_stats);
     let (admin_like, admin_dislike) = feedback_counts(&m.admin_feedback_stats);
 
@@ -68,7 +70,9 @@ fn conversation_to_json(m: &ExportConversationRecord) -> serde_json::Value {
         "id": m.id,
         "title": m.title,
         "user_or_account": m.user_or_account,
-        "status": format_status(&m.status_count),
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "partial_success_count": partial_success_count,
         "message_count": m.message_count,
         "user_feedback_like": user_like,
         "user_feedback_dislike": user_dislike,
@@ -95,17 +99,21 @@ pub fn export_messages_to_json(messages: &[ExportMessageRecord], include_metadat
 
 pub fn export_messages_to_csv(messages: &[ExportMessageRecord]) -> Result<String, String> {
     let mut lines: Vec<String> = vec![
-        "\"id\",\"message_id\",\"conversation_id\",\"query\",\"answer\",\"feedback\",\"answer_tokens\",\"prompt_tokens\",\"elapsed_time\",\"created_at\"".to_string()
+        "\"id\",\"message_id\",\"conversation_id\",\"user_or_account\",\"用户赞\",\"用户踩\",\"管理员赞\",\"管理员踩\",\"用户反馈内容\",\"query\",\"answer\",\"feedback\",\"answer_tokens\",\"prompt_tokens\",\"elapsed_time\",\"created_at\"".to_string()
     ];
 
     for m in messages {
         let query = escape_csv(&m.query);
         let answer = escape_csv(&m.answer);
         let feedback = m.feedback.as_deref().unwrap_or("");
+        let (user_like, user_dislike) = feedback_counts(&m.user_feedback_stats);
+        let (admin_like, admin_dislike) = feedback_counts(&m.admin_feedback_stats);
+        let feedback_content = escape_csv(&extract_feedback_content(&m.feedbacks));
+        let created_at = format_timestamp(m.created_at);
         lines.push(format!(
-            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
-            m.id, m.message_id, m.conversation_id, query, answer, feedback,
-            m.answer_tokens, m.prompt_tokens, m.elapsed_time, m.created_at
+            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"",
+            m.id, m.message_id, m.conversation_id, escape_csv(&m.user_or_account), user_like, user_dislike, admin_like, admin_dislike, feedback_content, query, answer, feedback,
+            m.answer_tokens, m.prompt_tokens, m.elapsed_time, created_at
         ));
     }
 
@@ -128,10 +136,17 @@ fn message_to_json(m: &ExportMessageRecord, include_metadata: bool, include_agen
         "id": m.id,
         "message_id": m.message_id,
         "conversation_id": m.conversation_id,
+        "user_or_account": m.user_or_account,
+        "user_feedback_like": feedback_counts(&m.user_feedback_stats).0,
+        "user_feedback_dislike": feedback_counts(&m.user_feedback_stats).1,
+        "admin_feedback_like": feedback_counts(&m.admin_feedback_stats).0,
+        "admin_feedback_dislike": feedback_counts(&m.admin_feedback_stats).1,
+        "user_feedback_content": extract_feedback_content(&m.feedbacks),
         "query": m.query,
         "answer": m.answer,
         "feedback": m.feedback,
         "created_at": m.created_at,
+        "created_at_human": format_timestamp(m.created_at),
     });
 
     if include_metadata {
@@ -155,31 +170,11 @@ fn feedback_counts(stats: &serde_json::Value) -> (i64, i64) {
     (like, dislike)
 }
 
-fn format_status(status_count: &serde_json::Value) -> String {
+fn status_counts(status_count: &serde_json::Value) -> (i64, i64, i64) {
     let success = status_count.get("success").and_then(|v| v.as_i64()).unwrap_or(0);
     let failed = status_count.get("failed").and_then(|v| v.as_i64()).unwrap_or(0);
     let partial_success = status_count.get("partial_success").and_then(|v| v.as_i64()).unwrap_or(0);
-
-    let mut parts = Vec::new();
-    if success > 0 {
-        if success == 1 && failed == 0 && partial_success == 0 {
-            parts.push("Success".to_string());
-        } else {
-            parts.push(format!("{} Success", success));
-        }
-    }
-    if failed > 0 {
-        parts.push(format!("{} Failure", failed));
-    }
-    if partial_success > 0 {
-        parts.push(format!("{} Partial Success", partial_success));
-    }
-
-    if parts.is_empty() {
-        return "N/A".to_string();
-    }
-
-    parts.join(", ")
+    (success, failed, partial_success)
 }
 
 /// Save export file using a native save dialog, with fallback to Downloads directory.
@@ -219,7 +214,9 @@ fn format_timestamp(ts: i64) -> String {
     if ts <= 0 {
         return String::new();
     }
+    let tz = chrono::FixedOffset::east_opt(8 * 3600);
     chrono::DateTime::from_timestamp(ts, 0)
+        .and_then(|dt| tz.map(|offset| dt.with_timezone(&offset)))
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_default()
 }

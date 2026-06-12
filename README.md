@@ -11,14 +11,16 @@
 
 ### 导出字段说明（会话导出）
 
-- CSV 至少包含：标题、用户或账户、状态、消息数、用户赞、用户踩、管理员赞、管理员踩、更新时间、创建时间。
-- 状态来自会话级 `status_count` 聚合，示例：`Success`、`1 Failure`、`2 Success, 1 Failure`。
+- CSV 至少包含：标题、用户或账户、成功消息数、失败消息数、消息数、用户赞、用户踩、管理员赞、管理员踩、更新时间、创建时间。
+- 成功/失败消息数来自会话级 `status_count` 聚合；`partial_success` 会保留在 JSON/JSONL 原始统计字段中。
 - 用户反馈和管理员反馈已拆分为独立的赞/踩数量列，便于表格统计与筛选。
 - JSON/JSONL 与 CSV 使用同一组会话维度字段，并额外保留原始统计字段以便后续分析。
 
 ### 导出字段说明（消息导出）
 
-- 消息导出保留原有明细字段：`query`、`answer`、`feedback`、`answer_tokens`、`prompt_tokens`、`elapsed_time`、`created_at`。
+- CSV 至少包含：`id`、`message_id`、`conversation_id`、`user_or_account`、用户赞、用户踩、管理员赞、管理员踩、用户反馈内容、`query`、`answer`、`feedback`、`answer_tokens`、`prompt_tokens`、`elapsed_time`、`created_at`。
+- 消息导出的 `created_at` 使用东八区可读时间格式；JSON/JSONL 同时额外提供 `created_at_human` 便于显式区分。
+- JSON/JSONL 额外提供 `user_feedback_like`、`user_feedback_dislike`、`admin_feedback_like`、`admin_feedback_dislike`、`user_feedback_content`。
 - 当勾选元数据或 Agent 思维链时，JSON/JSONL 会额外带出 `metadata`、`retriever_resources`、`agent_thoughts`。
 
 ## 开发
