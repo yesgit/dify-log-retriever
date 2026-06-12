@@ -1260,10 +1260,10 @@ impl Database {
              COALESCE(c.user_feedback_stats, '{{}}') AS user_feedback_stats,
              COALESCE(c.admin_feedback_stats, '{{}}') AS admin_feedback_stats,
              m.query, m.answer, m.feedback,
-             retriever_resources, message_metadata, agent_thoughts, answer_tokens, prompt_tokens,
-             elapsed_time, created_at, workflow_run_id, inputs, message_tokens,
-             provider_response_latency, feedbacks, annotation, annotation_hit_history,
-             message_files, status, error, parent_message_id, raw_json
+             m.retriever_resources, m.message_metadata, m.agent_thoughts, m.answer_tokens, m.prompt_tokens,
+             m.elapsed_time, m.created_at, m.workflow_run_id, m.inputs, m.message_tokens,
+             m.provider_response_latency, m.feedbacks, m.annotation, m.annotation_hit_history,
+             m.message_files, m.status, m.error, m.parent_message_id, m.raw_json
              FROM messages m
              LEFT JOIN conversations c ON c.app_id = m.app_id AND c.conversation_id = m.conversation_id
              WHERE {} ORDER BY m.created_at ASC",
