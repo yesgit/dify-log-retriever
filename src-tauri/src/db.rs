@@ -1128,86 +1128,109 @@ impl Database {
         start_date: Option<&str>,
         end_date: Option<&str>,
         keyword: Option<&str>,
-    ) -> Result<Vec<MessageDetail>, String> {
+    ) -> Result<Vec<ExportMessageRecord>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut mc_conditions = vec!["1=1".to_string()];
+        let mut mc_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut conditions = vec!["1=1".to_string()];
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if let Some(aid) = app_id {
-            conditions.push("app_id = ?".to_string());
+            mc_conditions.push("app_id = ?".to_string());
+            mc_params.push(Box::new(aid.to_string()));
+            conditions.push("m.app_id = ?".to_string());
             params.push(Box::new(aid.to_string()));
         }
         if let Some(sd) = start_date {
             if !sd.is_empty() {
-                conditions.push("created_at >= strftime('%s', ?)".to_string());
+                conditions.push("m.created_at >= strftime('%s', ?)".to_string());
                 params.push(Box::new(sd.to_string()));
             }
         }
         if let Some(ed) = end_date {
             if !ed.is_empty() {
-                conditions.push("created_at < strftime('%s', ?, '+1 day')".to_string());
+                conditions.push("m.created_at < strftime('%s', ?, '+1 day')".to_string());
                 params.push(Box::new(ed.to_string()));
             }
         }
         if let Some(kw) = keyword {
             if !kw.is_empty() {
-                conditions.push("(query LIKE ? OR answer LIKE ?)".to_string());
+                conditions.push("(m.query LIKE ? OR m.answer LIKE ? OR c.name LIKE ? OR c.conversation_id LIKE ? OR c.from_end_user_id LIKE ? OR c.from_end_user_session_id LIKE ?)".to_string());
                 let pattern = format!("%{}%", kw);
+                params.push(Box::new(pattern.clone()));
+                params.push(Box::new(pattern.clone()));
+                params.push(Box::new(pattern.clone()));
+                params.push(Box::new(pattern.clone()));
                 params.push(Box::new(pattern.clone()));
                 params.push(Box::new(pattern));
             }
         }
 
         let sql = format!(
-            "SELECT id, app_id, conversation_id, message_id, query, answer, feedback,
-             retriever_resources, message_metadata, agent_thoughts, answer_tokens, prompt_tokens,
-             elapsed_time, created_at, workflow_run_id, inputs, message_tokens,
-             provider_response_latency, feedbacks, annotation, annotation_hit_history,
-             message_files, status, error, parent_message_id, raw_json
-             FROM messages WHERE {} ORDER BY created_at ASC",
+            "SELECT m.id, m.message_id, m.conversation_id, m.query, m.answer, m.feedback,
+             m.answer_tokens, m.prompt_tokens, m.elapsed_time, m.created_at,
+             m.message_metadata, m.retriever_resources, m.agent_thoughts,
+             COALESCE(NULLIF(c.name, ''), m.conversation_id) AS title,
+             COALESCE(NULLIF(c.from_end_user_id, ''), NULLIF(c.from_end_user_session_id, ''), NULLIF(c.from_source, ''), '') AS user_or_account,
+             COALESCE(NULLIF(c.status, ''), m.status, '') AS status,
+             COALESCE(mc.message_count, 0) AS message_count,
+             COALESCE(c.user_feedback_stats, '{{}}') AS user_feedback_stats,
+             COALESCE(c.admin_feedback_stats, '{{}}') AS admin_feedback_stats,
+             COALESCE(c.updated_at, 0) AS updated_at,
+             COALESCE(c.created_at, m.created_at) AS conversation_created_at
+             FROM messages m
+             LEFT JOIN (
+                SELECT app_id, conversation_id, COUNT(*) AS message_count
+                FROM messages
+                WHERE {}
+                GROUP BY app_id, conversation_id
+             ) mc ON mc.app_id = m.app_id AND mc.conversation_id = m.conversation_id
+             LEFT JOIN conversations c ON c.app_id = m.app_id AND c.conversation_id = m.conversation_id
+             WHERE {} ORDER BY m.created_at ASC",
+            mc_conditions.join(" AND "),
             conditions.join(" AND ")
         );
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut all_params = mc_params;
+        all_params.extend(params);
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let messages: Vec<Message> = stmt
+        let messages: Vec<ExportMessageRecord> = stmt
             .query_map(param_refs.as_slice(), |row| {
-                Ok(Message {
+                let message_metadata: String = row.get(10)?;
+                let retriever_resources: String = row.get(11)?;
+                let agent_thoughts: String = row.get(12)?;
+                let user_feedback_stats: String = row.get(17)?;
+                let admin_feedback_stats: String = row.get(18)?;
+
+                Ok(ExportMessageRecord {
                     id: row.get(0)?,
-                    app_id: row.get(1)?,
+                    message_id: row.get(1)?,
                     conversation_id: row.get(2)?,
-                    message_id: row.get(3)?,
-                    query: row.get(4)?,
-                    answer: row.get(5)?,
-                    feedback: row.get(6)?,
-                    retriever_resources: row.get(7)?,
-                    message_metadata: row.get(8)?,
-                    agent_thoughts: row.get(9)?,
-                    answer_tokens: row.get(10)?,
-                    prompt_tokens: row.get(11)?,
-                    elapsed_time: row.get(12)?,
-                    created_at: row.get(13)?,
-                    workflow_run_id: row.get(14)?,
-                    inputs: row.get(15)?,
-                    message_tokens: row.get(16)?,
-                    provider_response_latency: row.get(17)?,
-                    feedbacks: row.get(18)?,
-                    annotation: row.get(19)?,
-                    annotation_hit_history: row.get(20)?,
-                    message_files: row.get(21)?,
-                    status: row.get(22)?,
-                    error: row.get(23)?,
-                    parent_message_id: row.get(24)?,
-                    raw_json: row.get(25)?,
+                    query: row.get(3)?,
+                    answer: row.get(4)?,
+                    feedback: row.get(5)?,
+                    answer_tokens: row.get(6)?,
+                    prompt_tokens: row.get(7)?,
+                    elapsed_time: row.get(8)?,
+                    created_at: row.get(9)?,
+                    message_metadata: parse_json(&message_metadata),
+                    retriever_resources: parse_json(&retriever_resources),
+                    agent_thoughts: parse_json(&agent_thoughts),
+                    title: row.get(13)?,
+                    user_or_account: row.get(14)?,
+                    status: row.get(15)?,
+                    message_count: row.get(16)?,
+                    user_feedback: parse_json(&user_feedback_stats),
+                    admin_feedback: parse_json(&admin_feedback_stats),
+                    updated_at: row.get(19)?,
+                    conversation_created_at: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
 
-        Ok(messages
-            .into_iter()
-            .map(|m| self.message_detail_without_workflow(m))
-            .collect())
+        Ok(messages)
     }
 
     // ===== Feedback Messages =====
