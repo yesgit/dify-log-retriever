@@ -1,10 +1,11 @@
 mod db;
 mod dify_api;
+mod dsl;
 mod export;
 mod models;
 
 use tauri::State;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use db::Database;
 use dify_api::DifyApiClient;
@@ -768,8 +769,8 @@ fn get_app_node_types(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-fn export_node_eval_data(
-    state: State<AppState>,
+async fn export_node_eval_data(
+    state: State<'_, AppState>,
     format: String,
     app_id: String,
     node_type: Option<String>,
@@ -790,14 +791,51 @@ fn export_node_eval_data(
         return Err("没有找到匹配的节点执行数据。请确认该应用已同步，且存在成功的 LLM/Agent 节点执行记录。".to_string());
     }
 
+    // Fetch the app's latest DSL from the Dify console at export time (not from
+    // local backups) and parse out per-node model params (temperature,
+    // structured-output schema, ...). A fetch failure aborts the export so that
+    // every exported record carries complete, reproducible parameters.
+    let dsl_configs = fetch_dsl_configs(&state, &app_id).await?;
+
     if let Some(sp) = save_path {
-        let content = export::export_node_eval(&records, &format)?;
+        let result = export::export_node_eval(&records, &format, &dsl_configs)?;
         let path = std::path::PathBuf::from(&sp);
-        std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))?;
-        Ok(format!("已导出到: {}", path.display()))
+        std::fs::write(&path, &result.content).map_err(|e| format!("写入文件失败: {}", e))?;
+        let base = format!("已导出到: {}", path.display());
+        Ok(export::append_unmatched_note(&base, result.total, result.unmatched))
     } else {
-        export::export_node_eval_to_file(&records, &format)
+        export::export_node_eval_to_file(&records, &format, &dsl_configs)
     }
+}
+
+/// Fetch an app's workflow DSL from the Dify console and parse it into a
+/// `node_id -> NodeDslConfig` map. Auto-refreshes the access token once on auth
+/// errors, mirroring `backup_all_dsl`.
+async fn fetch_dsl_configs(
+    state: &State<'_, AppState>,
+    app_id: &str,
+) -> Result<HashMap<String, NodeDslConfig>, String> {
+    let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
+    let mut client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
+
+    let dsl_yaml = match client.fetch_app_dsl(app_id, false).await {
+        Ok(c) => c,
+        Err(ref e) if DifyApiClient::is_auth_error(e) => {
+            let refreshed = try_auto_refresh(&state.db).await?;
+            client = DifyApiClient::new(
+                &refreshed.api_base,
+                &refreshed.api_key,
+                refreshed.proxy.as_deref(),
+            )?;
+            client
+                .fetch_app_dsl(app_id, false)
+                .await
+                .map_err(|e| format!("拉取应用 DSL 失败: {}", e))?
+        }
+        Err(e) => return Err(format!("拉取应用 DSL 失败: {}", e)),
+    };
+
+    dsl::parse_node_configs(&dsl_yaml)
 }
 
 // ===== Per-App Sync Config =====

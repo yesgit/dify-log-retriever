@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
 use rust_xlsxwriter::*;
 use serde_json::json;
 
-use crate::models::{DashboardStats, ExportConversationRecord, ExportMessageRecord, FeedbackMessage, NodeEvalRecord, PerformanceStats, StatDistribution};
+use crate::models::{DashboardStats, ExportConversationRecord, ExportMessageRecord, FeedbackMessage, NodeDslConfig, NodeEvalRecord, PerformanceStats, StatDistribution};
 
 const EXCEL_CELL_MAX_CHARS: usize = 32_767;
 const EXCEL_TRUNCATION_SUFFIX: &str = " [truncated]";
@@ -799,15 +800,73 @@ fn extract_context(process_data: &serde_json::Value) -> String {
     }
 }
 
+/// Inject model-call parameters (temperature/response_format/etc.) parsed from
+/// the DSL into an eval record object. `include_response_format` is false for
+/// formats where a response_format would be inappropriate (e.g. fine-tune rows).
+fn inject_eval_params(obj: &mut serde_json::Value, cfg: Option<&NodeDslConfig>, include_response_format: bool) {
+    let cfg = match cfg {
+        Some(c) => c,
+        None => return,
+    };
+    if let Some(t) = cfg.temperature {
+        obj["temperature"] = json!(t);
+    }
+    if include_response_format {
+        if let Some(rf) = &cfg.response_format {
+            obj["response_format"] = rf.clone();
+        }
+    }
+    if let Some(mt) = cfg.max_tokens {
+        obj["max_tokens"] = json!(mt);
+    }
+    // Provider-specific extensions (e.g. GLM "enable_thinking") are NOT part of
+    // the OpenAI request schema, so keep them off the top level — strict sample
+    // validators would reject unknown fields. Nest under `extra_body`, matching
+    // the OpenAI SDK convention; a consumer can pass extra_body=record["extra_body"].
+    if let Some(et) = cfg.enable_thinking {
+        obj["extra_body"] = json!({ "enable_thinking": et });
+    }
+}
+
+/// Result of an eval export: the JSONL content plus counts for user feedback.
+pub struct NodeEvalExportResult {
+    pub content: String,
+    pub total: usize,
+    pub unmatched: usize,
+}
+
+/// Append a note to the export message when some records couldn't be matched to
+/// a node in the DSL (so their rows were exported without model params).
+pub fn append_unmatched_note(base: &str, total: usize, unmatched: usize) -> String {
+    if unmatched > 0 {
+        format!(
+            "{}（共 {} 条记录，其中 {} 条的节点在当前 DSL 中未找到，已跳过参数注入——可能该节点已被编辑或删除）",
+            base, total, unmatched
+        )
+    } else {
+        base.to_string()
+    }
+}
+
 pub fn export_node_eval(
     records: &[NodeEvalRecord],
     format: &str,
-) -> Result<String, String> {
+    dsl_configs: &HashMap<String, NodeDslConfig>,
+) -> Result<NodeEvalExportResult, String> {
     if records.is_empty() {
         return Err("没有找到匹配的节点执行数据".to_string());
     }
 
+    let mut total = 0usize;
+    let mut unmatched = 0usize;
     let lines: Vec<String> = records.iter().map(|rec| {
+        total += 1;
+        let dsl_cfg = dsl_configs.get(&rec.node_id);
+        if dsl_cfg.is_none() {
+            // node_id not present in the DSL — the app was likely edited between
+            // trace time and export, so this row is exported without model params.
+            unmatched += 1;
+        }
         let prompt_messages = extract_prompt_messages(&rec.inputs, &rec.process_data);
         let output_text = extract_output_text(&rec.outputs);
         let model = extract_model(&rec.inputs, &rec.process_data);
@@ -843,6 +902,7 @@ pub fn export_node_eval(
                 if !model.is_empty() {
                     obj["model"] = json!(model);
                 }
+                inject_eval_params(&mut obj, dsl_cfg, true);
                 serde_json::to_string(&obj).unwrap_or_default()
             }
             "openai-finetune" => {
@@ -854,7 +914,15 @@ pub fn export_node_eval(
                 if !output_text.is_empty() {
                     msgs.push(json!({"role": "assistant", "content": output_text}));
                 }
-                serde_json::to_string(&json!({"messages": msgs})).unwrap_or_default()
+                let mut obj = json!({"messages": msgs});
+                // Fine-tune training rows only carry temperature; a response_format
+                // would be inappropriate for supervised training data.
+                if let Some(cfg) = dsl_cfg {
+                    if let Some(t) = cfg.temperature {
+                        obj["temperature"] = json!(t);
+                    }
+                }
+                serde_json::to_string(&obj).unwrap_or_default()
             }
             "alpaca" => {
                 // AlpacaEval / Instruction format
@@ -873,6 +941,7 @@ pub fn export_node_eval(
                 if !model.is_empty() {
                     obj["generator"] = json!(model);
                 }
+                inject_eval_params(&mut obj, dsl_cfg, true);
                 serde_json::to_string(&obj).unwrap_or_default()
             }
             "qa" => {
@@ -892,6 +961,7 @@ pub fn export_node_eval(
                 if !rec.query.is_empty() && rec.query != user_msg {
                     obj["original_query"] = json!(rec.query);
                 }
+                inject_eval_params(&mut obj, dsl_cfg, true);
                 serde_json::to_string(&obj).unwrap_or_default()
             }
             "raw" => {
@@ -914,6 +984,9 @@ pub fn export_node_eval(
                     "status": rec.status,
                     "elapsed_time": rec.elapsed_time,
                     "created_at": rec.created_at,
+                    "dsl_config": dsl_cfg
+                        .map(|c| serde_json::to_value(c).unwrap_or(serde_json::Value::Null))
+                        .unwrap_or(serde_json::Value::Null),
                 })).unwrap_or_default()
             }
             _ => {
@@ -930,23 +1003,29 @@ pub fn export_node_eval(
         line
     }).collect();
 
-    Ok(lines.join("\n"))
+    Ok(NodeEvalExportResult {
+        content: lines.join("\n"),
+        total,
+        unmatched,
+    })
 }
 
 pub fn export_node_eval_to_file(
     records: &[NodeEvalRecord],
     format: &str,
+    dsl_configs: &HashMap<String, NodeDslConfig>,
 ) -> Result<String, String> {
-    let content = export_node_eval(records, format)?;
+    let result = export_node_eval(records, format, dsl_configs)?;
 
     let default_filename = format!(
         "node_eval_{}_{}_{}records.jsonl",
         format,
         chrono::Local::now().format("%Y%m%d_%H%M%S"),
-        records.len()
+        result.total
     );
 
-    save_export_file_with_dialog(&content, &default_filename, "jsonl")
+    let saved = save_export_file_with_dialog(&result.content, &default_filename, "jsonl")?;
+    Ok(append_unmatched_note(&saved, result.total, result.unmatched))
 }
 
 // ===== Dashboard Export Functions =====
@@ -1345,4 +1424,83 @@ pub fn export_performance_to_excel(stats: &PerformanceStats, app_name: &str, sav
     workbook.save(&path).map_err(|e| format!("保存 Excel 失败: {}", e))?;
 
     Ok(format!("已导出到: {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{NodeDslConfig, NodeEvalRecord};
+
+    fn sample_cfg() -> NodeDslConfig {
+        NodeDslConfig {
+            node_type: Some("llm".to_string()),
+            temperature: Some(0.3),
+            max_tokens: Some(100),
+            enable_thinking: Some(false),
+            response_format: Some(json!({"type": "json_schema", "json_schema": {"name": "s"}})),
+        }
+    }
+
+    #[test]
+    fn inject_keeps_standard_fields_top_level_extras_nested() {
+        let mut obj = json!({});
+        let cfg = sample_cfg();
+        inject_eval_params(&mut obj, Some(&cfg), true);
+        // standard OpenAI sampling/format fields stay at the top level
+        assert_eq!(obj["temperature"], json!(0.3));
+        assert_eq!(obj["max_tokens"], json!(100));
+        assert_eq!(obj["response_format"]["type"], json!("json_schema"));
+        // the provider extension must NOT be a top-level key ...
+        assert!(obj.get("enable_thinking").is_none());
+        // ... it lives under extra_body (OpenAI SDK convention)
+        assert_eq!(obj["extra_body"]["enable_thinking"], json!(false));
+    }
+
+    #[test]
+    fn inject_omits_response_format_when_excluded() {
+        let mut obj = json!({});
+        let cfg = sample_cfg();
+        inject_eval_params(&mut obj, Some(&cfg), false);
+        assert!(obj.get("response_format").is_none());
+        assert_eq!(obj["temperature"], json!(0.3));
+        assert_eq!(obj["extra_body"]["enable_thinking"], json!(false));
+    }
+
+    #[test]
+    fn inject_noop_without_cfg() {
+        let mut obj = json!({});
+        inject_eval_params(&mut obj, None, true);
+        assert!(obj.as_object().map(|m| m.is_empty()).unwrap_or(true));
+    }
+
+    fn rec(node_id: &str) -> NodeEvalRecord {
+        NodeEvalRecord {
+            execution_id: "e".into(),
+            workflow_run_id: "w".into(),
+            node_id: node_id.into(),
+            node_type: "llm".into(),
+            node_title: "t".into(),
+            app_id: "a".into(),
+            conversation_id: "c".into(),
+            message_id: "m".into(),
+            query: "q".into(),
+            inputs: json!({}),
+            outputs: json!({"text": "out"}),
+            process_data: json!({}),
+            status: "succeeded".into(),
+            elapsed_time: 0.0,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn counts_unmatched_node_ids() {
+        let records = vec![rec("match"), rec("missing")];
+        let mut dsl = HashMap::new();
+        dsl.insert("match".to_string(), sample_cfg());
+        let result = export_node_eval(&records, "openai-eval", &dsl).unwrap();
+        assert_eq!(result.total, 2);
+        assert_eq!(result.unmatched, 1);
+        assert_eq!(result.content.lines().count(), 2);
+    }
 }

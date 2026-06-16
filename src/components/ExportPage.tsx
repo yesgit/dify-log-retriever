@@ -161,7 +161,7 @@ export function ExportPage() {
   ];
 
   const nodeEvalFormats = [
-    { value: 'openai-eval', label: 'OpenAI Evals', desc: 'messages + ideal 格式', icon: <Brain size={20} /> },
+    { value: 'openai-eval', label: 'OpenAI Evals', desc: 'messages + ideal + 温度/结构化输出（实时拉取 DSL）', icon: <Brain size={20} /> },
     { value: 'openai-finetune', label: 'OpenAI Fine-tune', desc: '含 assistant 回复的训练格式', icon: <Cpu size={20} /> },
     { value: 'alpaca', label: 'AlpacaEval', desc: 'instruction + output 格式', icon: <FileJson size={20} /> },
     { value: 'qa', label: 'QA 评测', desc: 'query + expected_output 格式', icon: <MessageSquare size={20} /> },
@@ -535,7 +535,7 @@ export function ExportPage() {
 
                 {/* Format description */}
                 <div className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-600 font-mono whitespace-pre-wrap">
-                  {nodeEvalFormat === 'openai-eval' && '{"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}], "ideal": "期望输出"}'}
+                  {nodeEvalFormat === 'openai-eval' && '{"messages": [{"role":"system",...},{"role":"user",...}], "ideal": "...", "model": "...", "temperature": 0.3, "response_format": {"type":"json_schema","json_schema":{...}}}'}
                   {nodeEvalFormat === 'openai-finetune' && '{"messages": [{"role": "system", ...}, {"role": "user", ...}, {"role": "assistant", "content": "实际输出"}]}'}
                   {nodeEvalFormat === 'alpaca' && '{"instruction": "用户输入", "input": "上下文", "output": "模型输出", "system": "系统提示词"}'}
                   {nodeEvalFormat === 'qa' && '{"query": "用户输入", "context": "检索上下文", "expected_output": "期望输出", "system_prompt": "..."}'}

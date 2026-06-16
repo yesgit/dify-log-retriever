@@ -585,6 +585,21 @@ pub struct NodeEvalRecord {
     pub created_at: i64,
 }
 
+/// Model-call parameters extracted from a workflow DSL node, used to reproduce
+/// the node's behavior when exporting eval data. Only LLM nodes carry
+/// meaningful values; non-LLM nodes leave the params as None.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeDslConfig {
+    /// Workflow node type (e.g. "llm").
+    pub node_type: Option<String>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<i64>,
+    /// Provider extension (e.g. GLM "enable_thinking"), kept as metadata.
+    pub enable_thinking: Option<bool>,
+    /// OpenAI-style response_format (json_schema) when structured output is enabled.
+    pub response_format: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTypeSummary {
     pub node_type: String,
