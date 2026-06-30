@@ -554,6 +554,13 @@ const angledXAxisProps = {
   interval: 0 as const,
 };
 
+/** Shared Line label style; only shown when data points are sparse enough to avoid overlap */
+const lineLabelStyle = { position: 'top' as const, fill: '#374151', fontSize: 10 };
+const makeLineLabel = (dataLen: number, formatter?: (v: any) => any) =>
+  dataLen <= 60
+    ? { ...lineLabelStyle, ...(formatter ? { formatter } : {}) }
+    : false;
+
 // ===== Model Token Speed Trend Chart =====
 function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
   const { models, pivot } = useMemo(() => {
@@ -589,7 +596,8 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
           <Legend wrapperStyle={{ fontSize: 12 }} />
           {models.map((model, idx) => (
             <Line key={model} type="linear" dataKey={safeKey(model)} name={model}
-              stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
+              stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false}
+              label={makeLineLabel(pivot.length, (v: any) => v == null ? '' : `${Number(v).toFixed(1)}`)} />
           ))}
         </LineChart>
       </ResponsiveContainer>
@@ -670,7 +678,8 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {keys.map((key, idx) => (
               <Line key={key} type="linear" dataKey={key} name={labelMap.get(key) || key}
-                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false}
+                label={makeLineLabel(timePivot.length, (v: any) => v == null ? '' : `${Number(v).toFixed(2)}s`)} />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -687,7 +696,8 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {keys.map((key, idx) => (
               <Line key={key} type="linear" dataKey={key} name={labelMap.get(key) || key}
-                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false}
+                label={makeLineLabel(countPivot.length, (v: any) => v == null ? '' : Number(v).toLocaleString())} />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -706,7 +716,8 @@ function NodeDailyCharts({ data }: { data: NodeDailyPerformance[] }) {
               <Line key={se.key} type="linear" dataKey={se.key} name={se.name}
                 stroke={se.color} strokeWidth={1.5}
                 strokeDasharray={se.key.endsWith('_error') ? '5 3' : undefined}
-                dot={false} connectNulls={false} />
+                dot={false} connectNulls={false}
+                label={makeLineLabel(successPivot.length, (v: any) => v == null ? '' : Number(v).toLocaleString())} />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -765,7 +776,8 @@ function AgentDailyCharts({ data }: { data: AgentDailyPerformance[] }) {
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {apps.map((app, idx) => (
               <Line key={app.id} type="linear" dataKey={`${app.id}_ttft`} name={app.name}
-                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false} />
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false}
+                label={makeLineLabel(ttftPivot.length, (v: any) => v == null ? '' : `${Number(v).toFixed(3)}s`)} />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -782,7 +794,8 @@ function AgentDailyCharts({ data }: { data: AgentDailyPerformance[] }) {
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {apps.map((app, idx) => (
               <Line key={app.id} type="linear" dataKey={`${app.id}_speed`} name={app.name}
-                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false} />
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]} strokeWidth={1.5} dot={false} connectNulls={false}
+                label={makeLineLabel(speedPivot.length, (v: any) => v == null ? '' : `${Number(v).toFixed(1)}`)} />
             ))}
           </LineChart>
         </ResponsiveContainer>
