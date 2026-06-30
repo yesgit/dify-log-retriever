@@ -714,8 +714,40 @@ fn extract_prompt_messages(inputs: &serde_json::Value, process_data: &serde_json
     messages
 }
 
-/// Extract the output text from LLM/Agent node outputs
-fn extract_output_text(outputs: &serde_json::Value) -> String {
+/// Extract the output text from LLM/Agent/question-classifier node outputs.
+/// For classifier nodes the structured {class_id, class_name} result is
+/// serialized as a JSON string so it can serve as the eval "ideal" answer.
+fn extract_output_text(outputs: &serde_json::Value, node_type: &str) -> String {
+    // question-classifier 节点的 outputs 是 {class_id, class_name, usage}，没有通用文本字段，
+    // 单独构造参考答案，导出为 {"class_id":..., "class_name":...} 的 JSON 字符串。
+    if node_type.contains("classifier") {
+        // class_id 在不同 Dify 版本里可能是字符串或数字，统一归一为字符串。
+        let extract_str = |key: &str| -> String {
+            let v = match outputs.get(key) {
+                Some(v) => v,
+                None => return String::new(),
+            };
+            v.as_str()
+                .map(String::from)
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+                .or_else(|| v.as_f64().map(|n| n.to_string()))
+                .unwrap_or_default()
+        };
+        let class_id = extract_str("class_id");
+        let class_name = extract_str("class_name");
+        if !class_id.is_empty() || !class_name.is_empty() {
+            let mut obj = serde_json::Map::new();
+            if !class_id.is_empty() {
+                obj.insert("class_id".into(), json!(class_id));
+            }
+            if !class_name.is_empty() {
+                obj.insert("class_name".into(), json!(class_name));
+            }
+            return serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
+        }
+        // class_id/class_name 均缺失时回退到通用逻辑兜底
+    }
+
     // Try common output field names
     let candidates = ["text", "output", "result", "answer", "content"];
     for key in &candidates {
@@ -868,7 +900,7 @@ pub fn export_node_eval(
             unmatched += 1;
         }
         let prompt_messages = extract_prompt_messages(&rec.inputs, &rec.process_data);
-        let output_text = extract_output_text(&rec.outputs);
+        let output_text = extract_output_text(&rec.outputs, &rec.node_type);
         let model = extract_model(&rec.inputs, &rec.process_data);
         let context = extract_context(&rec.process_data);
         let system_msg = prompt_messages.iter()
