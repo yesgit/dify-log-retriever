@@ -862,6 +862,13 @@ const angledXAxisProps = {
   interval: 0 as const,
 };
 
+/** Shared Line label style; only shown when data points are sparse enough to avoid overlap */
+const lineLabelStyle = { position: 'top' as const, fill: '#374151', fontSize: 10 };
+const makeLineLabel = (dataLen: number, formatter?: (v: any) => any) =>
+  dataLen <= 60
+    ? { ...lineLabelStyle, ...(formatter ? { formatter } : {}) }
+    : false;
+
 function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
   const data = fillMissingDates(rawData);
   const formatTickNumber = (v: number) => {
@@ -885,8 +892,8 @@ function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="linear" dataKey="conversations" name="会话数" stroke="#3b82f6" strokeWidth={2} dot={false} />
-            <Line type="linear" dataKey="messages" name="消息数" stroke="#22c55e" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="conversations" name="会话数" stroke="#3b82f6" strokeWidth={2} dot={false} label={makeLineLabel(data.length)} />
+            <Line type="linear" dataKey="messages" name="消息数" stroke="#22c55e" strokeWidth={2} dot={false} label={makeLineLabel(data.length)} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -904,7 +911,7 @@ function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="linear" dataKey="users" name="用户数" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="users" name="用户数" stroke="#8b5cf6" strokeWidth={2} dot={false} label={makeLineLabel(data.length)} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -922,8 +929,8 @@ function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="linear" dataKey="total_prompt_tokens" name="输入 Token" stroke="#f97316" strokeWidth={2} dot={false} />
-            <Line type="linear" dataKey="total_answer_tokens" name="输出 Token" stroke="#22c55e" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="total_prompt_tokens" name="输入 Token" stroke="#f97316" strokeWidth={2} dot={false} label={makeLineLabel(data.length, (v) => formatStatNumber(Number(v)))} />
+            <Line type="linear" dataKey="total_answer_tokens" name="输出 Token" stroke="#22c55e" strokeWidth={2} dot={false} label={makeLineLabel(data.length, (v) => formatStatNumber(Number(v)))} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -941,7 +948,7 @@ function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="linear" dataKey="errors" name="异常数" stroke="#ef4444" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="errors" name="异常数" stroke="#ef4444" strokeWidth={2} dot={false} label={makeLineLabel(data.length)} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -959,8 +966,8 @@ function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [Number(v).toLocaleString(), String(name)]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="linear" dataKey="likes" name="赞数" stroke="#22c55e" strokeWidth={2} dot={false} />
-            <Line type="linear" dataKey="dislikes" name="踩数" stroke="#ef4444" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="likes" name="赞数" stroke="#22c55e" strokeWidth={2} dot={false} label={makeLineLabel(data.length)} />
+            <Line type="linear" dataKey="dislikes" name="踩数" stroke="#ef4444" strokeWidth={2} dot={false} label={makeLineLabel(data.length)} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -978,8 +985,8 @@ function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [`${Number(v).toFixed(2)}s`, name]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="linear" dataKey="avg_elapsed_time" name="平均响应时间" stroke="#3b82f6" strokeWidth={2} dot={false} />
-            <Line type="linear" dataKey="avg_ttft" name="平均 TTFT" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="avg_elapsed_time" name="平均响应时间" stroke="#3b82f6" strokeWidth={2} dot={false} label={makeLineLabel(data.length, (v) => `${v.toFixed(2)}s`)} />
+            <Line type="linear" dataKey="avg_ttft" name="平均 TTFT" stroke="#8b5cf6" strokeWidth={2} dot={false} label={makeLineLabel(data.length, (v) => `${v.toFixed(2)}s`)} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -997,7 +1004,7 @@ function DailyTrendChart({ data: rawData }: { data: DailyStats[] }) {
               formatter={(v: any, name: any) => [`${Number(v).toFixed(1)} t/s`, name]}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="linear" dataKey="avg_token_speed" name="Token 速度" stroke="#f97316" strokeWidth={2} dot={false} />
+            <Line type="linear" dataKey="avg_token_speed" name="Token 速度" stroke="#f97316" strokeWidth={2} dot={false} label={makeLineLabel(data.length, (v) => `${v.toFixed(1)} t/s`)} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -1051,6 +1058,7 @@ function ModelTokenSpeedChart({ data }: { data: ModelDailyTokenSpeed[] }) {
               strokeWidth={2}
               dot={false}
               connectNulls={false}
+              label={makeLineLabel(pivot.length, (v) => v == null ? '' : `${Number(v).toFixed(1)}`)}
             />
           ))}
         </LineChart>
