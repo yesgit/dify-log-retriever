@@ -2308,39 +2308,6 @@ impl Database {
         Ok(count)
     }
 
-    /// Batch upsert multiple conversations for an app in a single transaction.
-    pub fn batch_upsert_conversations(&self, app_id: &str, convs: &[DifyConversationItem]) -> Result<usize, String> {
-        if convs.is_empty() {
-            return Ok(0);
-        }
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
-        let mut count = 0usize;
-        for conv in convs {
-            let id = format!("{}:{}", app_id, conv.id);
-            let r = conn.execute(
-                "INSERT OR REPLACE INTO conversations (
-                    id, app_id, conversation_id, name, inputs, status, introduction, summary,
-                    from_source, from_end_user_id, from_end_user_session_id, read_at, annotated,
-                    model_config, user_feedback_stats, admin_feedback_stats, status_count,
-                    raw_json, created_at, updated_at, synced_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, strftime('%s','now'))",
-                params![
-                    id, app_id, conv.id, conv.name,
-                    json_string(&conv.inputs, "{}"), conv.status, conv.introduction, conv.summary,
-                    conv.from_source, conv.from_end_user_id, conv.from_end_user_session_id,
-                    conv.read_at, bool_int(conv.annotated),
-                    json_string(&conv.model_config, "{}"), json_string(&conv.user_feedback_stats, "{}"),
-                    json_string(&conv.admin_feedback_stats, "{}"), json_string(&conv.status_count, "{}"),
-                    json_string(&conv.raw_json, "{}"), conv.created_at, conv.updated_at,
-                ],
-            );
-            match r { Ok(_) => count += 1, Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); } }
-        }
-        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-        Ok(count)
-    }
-
     /// Batch upsert messages spanning multiple conversations in a single transaction.
     /// Each tuple carries the conversation_id to use (does not rely on msg.conversation_id,
     /// which the API may omit).
@@ -2379,38 +2346,6 @@ impl Database {
                     json_string(&msg.annotation_hit_history, "null"), json_string(&msg.message_files, "[]"),
                     msg.status, json_string(&msg.error, "null"), msg.parent_message_id,
                     json_string(&msg.raw_json, "{}"), msg.created_at,
-                ],
-            );
-            match r { Ok(_) => count += 1, Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); } }
-        }
-        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-        Ok(count)
-    }
-
-    /// Batch upsert multiple workflow app logs in a single transaction.
-    pub fn batch_upsert_workflow_app_logs(&self, app_id: &str, logs: &[DifyWorkflowAppLogItem]) -> Result<usize, String> {
-        if logs.is_empty() {
-            return Ok(0);
-        }
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute_batch("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
-        let mut count = 0usize;
-        for log in logs {
-            let id = format!("{}:{}", app_id, log.id);
-            let end_user_id = log.created_by_end_user.as_ref().map(|u| u.id.clone()).unwrap_or_default();
-            let end_user_session_id = log.created_by_end_user.as_ref().map(|u| u.session_id.clone()).unwrap_or_default();
-            let r = conn.execute(
-                "INSERT OR REPLACE INTO workflow_app_logs (
-                    id, app_id, log_id, workflow_run_id, status, elapsed_time, total_tokens, total_steps,
-                    created_from, created_by_role, created_by_end_user_id, created_by_end_user_session_id,
-                    error, created_at, synced_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, strftime('%s','now'))",
-                params![
-                    id, app_id, log.id, log.workflow_run.id, log.workflow_run.status,
-                    log.workflow_run.elapsed_time, log.workflow_run.total_tokens, log.workflow_run.total_steps,
-                    log.created_from, log.created_by_role, end_user_id, end_user_session_id,
-                    json_string(log.workflow_run.error.as_ref().unwrap_or(&serde_json::Value::Null), "null"),
-                    log.created_at,
                 ],
             );
             match r { Ok(_) => count += 1, Err(e) => { conn.execute_batch("ROLLBACK").ok(); return Err(e.to_string()); } }
