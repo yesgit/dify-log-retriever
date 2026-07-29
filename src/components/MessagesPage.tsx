@@ -39,7 +39,7 @@ export function MessagesPage() {
       const result = await invoke<MessagesResult>('get_all_messages', {
         appId: selectedApp || null,
         keyword: searchKeyword || null,
-        page,,
+        page,
         pageSize,
       });
       setMessages(result.data || []);
