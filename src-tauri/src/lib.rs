@@ -6,10 +6,17 @@ mod models;
 
 use tauri::State;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use db::Database;
 use dify_api::DifyApiClient;
 use models::*;
+
+/// Max concurrent in-flight HTTP requests during sync (detail/messages per
+/// conversation, plus workflow run/node fetches). Tunable.
+const SYNC_CONCURRENCY: usize = 8;
 
 struct AppState {
     db: Database,
@@ -250,9 +257,11 @@ async fn sync_workflow_app(
     let mut synced_node_executions: i64 = 0;
     let mut failed_details: i64 = 0;
     let mut fetched_workflow_runs: HashSet<String> = HashSet::new();
-    let mut workflow_tasks: Vec<tokio::task::JoinHandle<(String, Result<DifyWorkflowRun, String>, Result<Vec<DifyNodeExecution>, String>)>> = Vec::new();
     let mut page: i64 = 1;
     let limit: i64 = 100;
+
+    // Bounded concurrency for workflow run/node detail fetches.
+    let semaphore = Arc::new(Semaphore::new(SYNC_CONCURRENCY));
 
     // For incremental sync, get the latest created_at from local DB to know when to stop
     let max_local_created_at: Option<i64> = if is_incremental {
@@ -266,11 +275,17 @@ async fn sync_workflow_app(
         total_messages += logs_resp.data.len() as i64;
 
         let mut early_stop = false;
+        // Page-level accumulators for batched DB writes
+        let mut logs_to_write: Vec<DifyWorkflowAppLogItem> = Vec::new();
+        let mut convs_to_write: Vec<DifyConversationItem> = Vec::new();
+        let mut msgs_to_write: Vec<(String, DifyMessageItem)> = Vec::new();
+        let mut wf_set: JoinSet<Option<(String, Result<DifyWorkflowRun, String>, Result<Vec<DifyNodeExecution>, String>)>> = JoinSet::new();
+
         for log_item in &logs_resp.data {
             // In incremental mode, stop when we reach data older than our latest local record.
             // Use < (strict less-than) to re-process any logs at the same timestamp boundary,
             // ensuring we don't miss logs that share the same created_at second.
-            // Note: use break (not return) to ensure spawned workflow_tasks are flushed below.
+            // Note: use break (not return) to ensure batched writes + spawned workflow tasks are flushed below.
             if is_incremental {
                 if let Some(max_ts) = max_local_created_at {
                     if log_item.created_at < max_ts {
@@ -280,7 +295,7 @@ async fn sync_workflow_app(
                 }
             }
 
-            state.db.upsert_workflow_app_log(app_id, log_item)?;
+            logs_to_write.push(log_item.clone());
 
             // Create conversation record so workflow data shows in conversation list UI
             let run_id_for_name = &log_item.workflow_run.id;
@@ -315,9 +330,8 @@ async fn sync_workflow_app(
                 updated_at: if log_item.workflow_run.finished_at > 0 { log_item.workflow_run.finished_at } else { log_item.created_at },
                 raw_json: serde_json::Value::Null,
             };
-            state.db.upsert_conversation(app_id, &conv)?;
+            convs_to_write.push(conv);
             total_conversations += 1;
-            synced_conversations += 1;
 
             // Create message record so workflow run details appear in message detail UI
             let workflow_run_id = if log_item.workflow_run.id.is_empty() { None } else { Some(log_item.workflow_run.id.clone()) };
@@ -352,8 +366,7 @@ async fn sync_workflow_app(
                 created_at: log_item.created_at,
                 raw_json: serde_json::Value::Null,
             };
-            state.db.upsert_message(app_id, &log_item.id, &msg)?;
-            synced_messages += 1;
+            msgs_to_write.push((log_item.id.clone(), msg));
 
             let run_id = &log_item.workflow_run.id;
             if fetch_workflow_details && !run_id.is_empty() {
@@ -362,37 +375,59 @@ async fn sync_workflow_app(
                     let rid = run_id.clone();
                     let aid = app_id.to_string();
                     let c = client.clone();
-                    let handle = tokio::spawn(async move {
+                    let sem = semaphore.clone();
+                    wf_set.spawn(async move {
+                        let _permit = sem.acquire_owned().await.ok()?;
                         let run_result = c.fetch_workflow_run(&aid, &rid).await;
                         let nodes_result = c.fetch_node_executions(&aid, &rid).await;
-                        (rid, run_result, nodes_result)
+                        Some((rid, run_result, nodes_result))
                     });
-                    workflow_tasks.push(handle);
                 }
             }
         }
 
-        // Flush pending workflow tasks at end of each page
-        for task in workflow_tasks.drain(..) {
-            if let Ok((run_id, run_result, nodes_result)) = task.await {
-                if let Ok(run) = run_result {
-                    match state.db.upsert_workflow_run(app_id, &run) {
-                        Ok(_) => synced_workflow_runs += 1,
-                        Err(_) => failed_details += 1,
-                    }
-                } else {
-                    failed_details += 1;
-                }
-                if let Ok(nodes) = nodes_result {
-                    if !nodes.is_empty() {
-                        match state.db.batch_upsert_node_executions(app_id, &run_id, &nodes) {
-                            Ok(count) => synced_node_executions += count as i64,
+        // Batch DB writes for the whole page (3 transactions instead of 3N commits)
+        state.db.batch_upsert_workflow_app_logs(app_id, &logs_to_write)?;
+        state.db.batch_upsert_conversations(app_id, &convs_to_write)?;
+        synced_conversations += convs_to_write.len() as i64;
+        if !msgs_to_write.is_empty() {
+            match state.db.batch_upsert_messages_multi(app_id, &msgs_to_write) {
+                Ok(count) => synced_messages += count as i64,
+                Err(_) => {
+                    // Fallback to per-row writes (preserves existing resilience)
+                    for (conv_id, msg) in &msgs_to_write {
+                        match state.db.upsert_message(app_id, conv_id, msg) {
+                            Ok(_) => synced_messages += 1,
                             Err(_) => failed_details += 1,
                         }
                     }
-                } else {
-                    failed_details += 1;
                 }
+            }
+        }
+
+        // Flush pending workflow detail tasks (already running concurrently, bounded)
+        while let Some(res) = wf_set.join_next().await {
+            let (run_id, run_result, nodes_result) = match res {
+                Ok(Some(v)) => v,
+                _ => continue,
+            };
+            if let Ok(run) = run_result {
+                match state.db.upsert_workflow_run(app_id, &run) {
+                    Ok(_) => synced_workflow_runs += 1,
+                    Err(_) => failed_details += 1,
+                }
+            } else {
+                failed_details += 1;
+            }
+            if let Ok(nodes) = nodes_result {
+                if !nodes.is_empty() {
+                    match state.db.batch_upsert_node_executions(app_id, &run_id, &nodes) {
+                        Ok(count) => synced_node_executions += count as i64,
+                        Err(_) => failed_details += 1,
+                    }
+                }
+            } else {
+                failed_details += 1;
             }
         }
 
@@ -437,6 +472,10 @@ async fn sync_chat_app(
     let mut fetched_workflow_runs: HashSet<String> = HashSet::new();
     let mut page: i64 = 1;
 
+    // Bounded concurrency for all HTTP fetches (detail+messages per conversation,
+    // plus workflow run/node fetches).
+    let semaphore = Arc::new(Semaphore::new(SYNC_CONCURRENCY));
+
     loop {
         let conv_resp = client.fetch_conversations(app_id, 100, page).await?;
 
@@ -445,19 +484,20 @@ async fn sync_chat_app(
             let ids: Vec<String> = conv_resp.data.iter().map(|c| c.id.clone()).collect();
             state.db.get_conversations_updated_at(app_id, &ids)?
         } else {
-            std::collections::HashMap::new()
+            HashMap::new()
         };
 
         let mut page_skipped = 0;
 
-        for conv in &conv_resp.data {
-            // In incremental mode, check if conversation has changed
+        // Collect conversations that need syncing (skip unchanged in incremental mode).
+        // Owned so conv_resp is free to be read below (has_more / len).
+        let to_sync: Vec<DifyConversationItem> = conv_resp.data.iter().filter(|conv| {
             if is_incremental {
                 if let Some(local_updated) = local_updated_map.get(&conv.id) {
                     if *local_updated == conv.updated_at {
                         skipped_conversations += 1;
                         page_skipped += 1;
-                        continue;
+                        return false;
                     } else {
                         updated_conversations += 1;
                     }
@@ -465,83 +505,128 @@ async fn sync_chat_app(
                     new_conversations += 1;
                 }
             }
+            true
+        }).cloned().collect();
 
+        // Parallel HTTP fetch: per conversation, fetch detail + messages concurrently.
+        let mut set: JoinSet<Option<(DifyConversationItem, Result<DifyConversationItem, String>, Result<Vec<DifyMessageItem>, String>)>> = JoinSet::new();
+        for conv in to_sync {
+            let client = client.clone();
+            let app_id = app_id.to_string();
+            let sem = semaphore.clone();
+            set.spawn(async move {
+                let _permit = sem.acquire_owned().await.ok()?;
+                let (detail_res, messages_res) = tokio::join!(
+                    client.fetch_conversation_detail(&app_id, &conv.id),
+                    client.fetch_messages(&app_id, &conv.id, 100),
+                );
+                Some((conv, detail_res, messages_res))
+            });
+        }
+
+        // Collect results as they complete
+        let mut convs_to_write: Vec<DifyConversationItem> = Vec::new();
+        let mut msgs_to_write: Vec<(String, DifyMessageItem)> = Vec::new();
+        let mut page_run_ids: Vec<String> = Vec::new();
+
+        while let Some(res) = set.join_next().await {
+            let (conv, detail_res, messages_res) = match res {
+                Ok(Some(v)) => v,
+                Ok(None) => continue, // permit acquisition failed
+                Err(_) => continue,   // task panicked
+            };
             total_conversations += 1;
-            state.db.upsert_conversation(app_id, conv)?;
             synced_conversations += 1;
 
-            match client.fetch_conversation_detail(app_id, &conv.id).await {
+            // Merge detail into the list item (fallback to list item on failure)
+            let final_conv = match detail_res {
                 Ok(mut detail) => {
-                    fill_missing_conversation_detail(&mut detail, conv);
-                    state.db.upsert_conversation(app_id, &detail)?;
+                    fill_missing_conversation_detail(&mut detail, &conv);
+                    detail
+                }
+                Err(_) => {
+                    failed_details += 1;
+                    conv.clone()
+                }
+            };
+
+            match messages_res {
+                Ok(messages) => {
+                    total_messages += messages.len() as i64;
+                    for msg in messages {
+                        if fetch_workflow_details {
+                            if let Some(run_id) = msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()) {
+                                page_run_ids.push(run_id.to_string());
+                            }
+                        }
+                        msgs_to_write.push((conv.id.clone(), msg));
+                    }
                 }
                 Err(_) => {
                     failed_details += 1;
                 }
             }
 
-            let messages = client.fetch_messages(app_id, &conv.id, 100).await?;
-            total_messages += messages.len() as i64;
+            convs_to_write.push(final_conv);
+        }
 
-            // Batch insert messages in a single transaction
-            if !messages.is_empty() {
-                match state.db.batch_upsert_messages(app_id, &conv.id, &messages) {
-                    Ok(count) => synced_messages += count as i64,
-                    Err(_) => {
-                        for msg in &messages {
-                            match state.db.upsert_message(app_id, &conv.id, msg) {
-                                Ok(_) => synced_messages += 1,
-                                Err(_) => failed_details += 1,
-                            }
+        // Batch DB writes for the whole page (2 transactions instead of N commits)
+        state.db.batch_upsert_conversations(app_id, &convs_to_write)?;
+        if !msgs_to_write.is_empty() {
+            match state.db.batch_upsert_messages_multi(app_id, &msgs_to_write) {
+                Ok(count) => synced_messages += count as i64,
+                Err(_) => {
+                    // Fallback to per-row writes (preserves existing resilience)
+                    for (conv_id, msg) in &msgs_to_write {
+                        match state.db.upsert_message(app_id, conv_id, msg) {
+                            Ok(_) => synced_messages += 1,
+                            Err(_) => failed_details += 1,
                         }
                     }
                 }
             }
+        }
 
-            // Collect unique workflow run IDs to fetch in parallel (only if workflow details enabled)
-            let run_ids: Vec<String> = if fetch_workflow_details {
-                messages.iter()
-                    .filter_map(|msg| msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()).map(|id| id.to_string()))
-                    .filter(|run_id| fetched_workflow_runs.insert(format!("{}:{}", app_id, run_id)))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            // Fetch workflow runs and node executions in parallel (batches of 4)
-            for run_id_chunk in run_ids.chunks(4) {
-                let mut tasks = Vec::new();
-                for run_id in run_id_chunk {
-                    let client = client.clone();
-                    let app_id = app_id.to_string();
-                    let run_id = run_id.clone();
-                    tasks.push(tokio::spawn(async move {
-                        let run_result = client.fetch_workflow_run(&app_id, &run_id).await;
-                        let nodes_result = client.fetch_node_executions(&app_id, &run_id).await;
-                        (run_id, run_result, nodes_result)
-                    }));
+        // Fetch workflow runs + node executions in parallel (bounded by the same semaphore)
+        let run_ids: Vec<String> = page_run_ids.into_iter()
+            .filter(|run_id| fetched_workflow_runs.insert(format!("{}:{}", app_id, run_id)))
+            .collect();
+        if !run_ids.is_empty() {
+            let mut wf_set: JoinSet<Option<(String, Result<DifyWorkflowRun, String>, Result<Vec<DifyNodeExecution>, String>)>> = JoinSet::new();
+            for run_id in &run_ids {
+                let client = client.clone();
+                let app_id = app_id.to_string();
+                let run_id = run_id.clone();
+                let sem = semaphore.clone();
+                wf_set.spawn(async move {
+                    let _permit = sem.acquire_owned().await.ok()?;
+                    let run_result = client.fetch_workflow_run(&app_id, &run_id).await;
+                    let nodes_result = client.fetch_node_executions(&app_id, &run_id).await;
+                    Some((run_id, run_result, nodes_result))
+                });
+            }
+            while let Some(res) = wf_set.join_next().await {
+                let (run_id, run_result, nodes_result) = match res {
+                    Ok(Some(v)) => v,
+                    _ => continue,
+                };
+                if let Ok(run) = run_result {
+                    match state.db.upsert_workflow_run(app_id, &run) {
+                        Ok(_) => synced_workflow_runs += 1,
+                        Err(_) => failed_details += 1,
+                    }
+                } else {
+                    failed_details += 1;
                 }
-                for task in tasks {
-                    if let Ok((run_id, run_result, nodes_result)) = task.await {
-                        if let Ok(run) = run_result {
-                            match state.db.upsert_workflow_run(app_id, &run) {
-                                Ok(_) => synced_workflow_runs += 1,
-                                Err(_) => failed_details += 1,
-                            }
-                        } else {
-                            failed_details += 1;
-                        }
-                        if let Ok(nodes) = nodes_result {
-                            if !nodes.is_empty() {
-                                match state.db.batch_upsert_node_executions(app_id, &run_id, &nodes) {
-                                    Ok(count) => synced_node_executions += count as i64,
-                                    Err(_) => failed_details += 1,
-                                }
-                            }
-                        } else {
-                            failed_details += 1;
+                if let Ok(nodes) = nodes_result {
+                    if !nodes.is_empty() {
+                        match state.db.batch_upsert_node_executions(app_id, &run_id, &nodes) {
+                            Ok(count) => synced_node_executions += count as i64,
+                            Err(_) => failed_details += 1,
                         }
                     }
+                } else {
+                    failed_details += 1;
                 }
             }
         }
