@@ -532,6 +532,13 @@ pub struct ConversationsResult {
     pub total: i64,
 }
 
+// ===== Messages Query Result =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagesResult {
+    pub data: Vec<MessageDetail>,
+    pub total: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportConversationRecord {
     pub id: String,

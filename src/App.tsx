@@ -6,6 +6,7 @@ import { ConfigPage } from './components/ConfigPage';
 import { AppsPage } from './components/AppsPage';
 import { SyncPage } from './components/SyncPage';
 import { ConversationsPage } from './components/ConversationsPage';
+import { MessagesPage } from './components/MessagesPage';
 import { FeedbackPage } from './components/FeedbackPage';
 import { DashboardPage } from './components/DashboardPage';
 import { PerformancePage } from './components/PerformancePage';
@@ -287,6 +288,8 @@ function App() {
         return <SyncPage />;
       case 'conversations':
         return <ConversationsPage />;
+      case 'messages':
+        return <MessagesPage />;
       case 'feedback':
         return <FeedbackPage />;
       case 'dashboard':

@@ -971,6 +971,110 @@ impl Database {
             .collect()
     }
 
+    pub fn get_all_messages(
+        &self,
+        app_id: Option<&str>,
+        keyword: Option<&str>,
+        page: i64,
+        page_size: i64,
+    ) -> Result<(Vec<MessageDetail>, i64), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        // Build WHERE clause with optional app_id and keyword filters
+        let mut where_conditions = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        if let Some(aid) = app_id {
+            where_conditions.push(format!("app_id = ?{}", param_idx));
+            params.push(Box::new(aid.to_string()));
+            param_idx += 1;
+        }
+
+        if let Some(kw) = keyword {
+            if !kw.trim().is_empty() {
+                where_conditions.push(format!("(query LIKE ?{} OR answer LIKE ?{})", param_idx, param_idx));
+                let pattern = format!("%{}%", kw);
+                params.push(Box::new(pattern));
+                param_idx += 1;
+            }
+        }
+
+        let where_clause = if where_conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_conditions.join(" AND "))
+        };
+
+        // Count total messages
+        let count_sql = format!("SELECT COUNT(*) FROM messages {}", where_clause);
+        let param_refs_count: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let total: i64 = conn
+            .query_row(&count_sql, param_refs_count.as_slice(), |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+
+        // Fetch messages with pagination, ordered by created_at DESC (newest first)
+        let sql = format!(
+            "SELECT id, app_id, conversation_id, message_id, query, answer, feedback,
+                 retriever_resources, message_metadata, agent_thoughts, answer_tokens, prompt_tokens,
+                 elapsed_time, created_at, workflow_run_id, inputs, message_tokens,
+                 provider_response_latency, feedbacks, annotation, annotation_hit_history,
+                 message_files, status, error, parent_message_id, raw_json
+                 FROM messages {} ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
+            where_clause,
+            param_idx,
+            param_idx + 1
+        );
+
+        params.push(Box::new(page_size));
+        params.push(Box::new((page - 1) * page_size));
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let messages: Vec<Message> = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                Ok(Message {
+                    id: row.get(0)?,
+                    app_id: row.get(1)?,
+                    conversation_id: row.get(2)?,
+                    message_id: row.get(3)?,
+                    query: row.get(4)?,
+                    answer: row.get(5)?,
+                    feedback: row.get(6)?,
+                    retriever_resources: row.get(7)?,
+                    message_metadata: row.get(8)?,
+                    agent_thoughts: row.get(9)?,
+                    answer_tokens: row.get(10)?,
+                    prompt_tokens: row.get(11)?,
+                    elapsed_time: row.get(12)?,
+                    created_at: row.get(13)?,
+                    workflow_run_id: row.get(14)?,
+                    inputs: row.get(15)?,
+                    message_tokens: row.get(16)?,
+                    provider_response_latency: row.get(17)?,
+                    feedbacks: row.get(18)?,
+                    annotation: row.get(19)?,
+                    annotation_hit_history: row.get(20)?,
+                    message_files: row.get(21)?,
+                    status: row.get(22)?,
+                    error: row.get(23)?,
+                    parent_message_id: row.get(24)?,
+                    raw_json: row.get(25)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let details: Vec<MessageDetail> = messages
+            .into_iter()
+            .map(|m| self.message_detail_from_row(&conn, m))
+            .collect();
+
+        Ok((details, total))
+    }
+
+
     fn message_detail_without_workflow(&self, m: Message) -> MessageDetail {
         MessageDetail {
             id: m.id,

@@ -30,6 +30,7 @@ const navItems: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'apps', label: '应用管理', icon: <AppWindow size={20} /> },
   { page: 'sync', label: '数据同步', icon: <RefreshCw size={20} /> },
   { page: 'conversations', label: '对话浏览', icon: <MessageSquare size={20} /> },
+  { page: 'messages', label: '消息浏览', icon: <FileText size={20} /> },
   { page: 'feedback', label: '用户反馈', icon: <ThumbsUp size={20} /> },
   { page: 'dashboard', label: '数据看板', icon: <BarChart3 size={20} /> },
   { page: 'performance', label: '性能分析', icon: <Gauge size={20} /> },

@@ -1,5 +1,5 @@
 // ===== Page State =====
-export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'dashboard' | 'performance' | 'export' | 'feedback' | 'dsl-backup';
+export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'messages' | 'dashboard' | 'performance' | 'export' | 'feedback' | 'dsl-backup';
 
 // ===== Config =====
 export interface DifyConfig {
@@ -42,6 +42,11 @@ export interface ConversationSummary {
 
 export interface ConversationsResult {
   data: ConversationSummary[];
+  total: number;
+}
+
+export interface MessagesResult {
+  data: MessageDetail[];
   total: number;
 }
 

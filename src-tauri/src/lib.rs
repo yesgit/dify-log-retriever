@@ -598,6 +598,19 @@ fn get_messages(
 }
 
 #[tauri::command]
+fn get_all_messages(
+    state: State<AppState>,
+    app_id: Option<String>,
+    keyword: Option<String>,
+    page: i64,
+    page_size: i64,
+) -> Result<MessagesResult, String> {
+    let (messages, total) = state.db.get_all_messages(app_id.as_deref(), keyword.as_deref(), page, page_size)?;
+    Ok(MessagesResult { data: messages, total })
+}
+
+
+#[tauri::command]
 fn get_dashboard_stats(
     state: State<AppState>,
     app_id: Option<String>,
@@ -1201,6 +1214,7 @@ pub fn run() {
             sync_app_data,
             get_conversations,
             get_messages,
+            get_all_messages,
             get_dashboard_stats,
             rebuild_dashboard_stats,
             get_aggregation_status,
