@@ -1069,7 +1069,7 @@ impl Database {
         let details: Vec<MessageDetail> = messages
             .into_iter()
             .map(|m| self.message_detail_from_row(&conn, m))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok((details, total))
     }
