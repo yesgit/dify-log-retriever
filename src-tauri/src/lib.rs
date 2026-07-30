@@ -551,6 +551,11 @@ async fn sync_chat_app(
         // Collect results as they complete
         let mut convs_to_write: Vec<DifyConversationItem> = Vec::new();
         let mut page_run_ids: Vec<String> = Vec::new();
+        // Buffer messages across conversations and flush in bounded chunks: few
+        // commits (close to one per page) without one giant transaction or a
+        // whole-page memory spike.
+        let mut msg_buf: Vec<(String, DifyMessageItem)> = Vec::new();
+        const MSG_FLUSH_CHUNK: usize = 500;
 
         while let Some(res) = set.join_next().await {
             let (conv, detail_res, messages_res) = match res {
@@ -584,18 +589,22 @@ async fn sync_chat_app(
                             }
                         }
                     }
-                    // Write this conversation's messages immediately (bounded
-                    // transaction) rather than accumulating the whole page, which
-                    // could block the runtime on one giant transaction for apps
-                    // with conversations that have large message histories.
-                    if !messages.is_empty() {
-                        match state.db.batch_upsert_messages(app_id, &conv.id, &messages) {
-                            Ok(count) => synced_messages += count as i64,
-                            Err(_) => {
-                                for msg in &messages {
-                                    match state.db.upsert_message(app_id, &conv.id, msg) {
-                                        Ok(_) => synced_messages += 1,
-                                        Err(_) => failed_details += 1,
+                    for msg in messages {
+                        msg_buf.push((conv.id.clone(), msg));
+                        // Flush as soon as the buffer reaches the chunk size, so
+                        // memory and transaction size stay bounded even for
+                        // conversations with very large histories.
+                        if msg_buf.len() >= MSG_FLUSH_CHUNK {
+                            let chunk: Vec<(String, DifyMessageItem)> =
+                                msg_buf.drain(..MSG_FLUSH_CHUNK).collect();
+                            match state.db.batch_upsert_messages_multi(app_id, &chunk) {
+                                Ok(count) => synced_messages += count as i64,
+                                Err(_) => {
+                                    for (cid, m) in &chunk {
+                                        match state.db.upsert_message(app_id, cid, m) {
+                                            Ok(_) => synced_messages += 1,
+                                            Err(_) => failed_details += 1,
+                                        }
                                     }
                                 }
                             }
@@ -604,6 +613,21 @@ async fn sync_chat_app(
                 }
                 Err(_) => {
                     failed_details += 1;
+                }
+            }
+        }
+
+        // Flush any remaining buffered messages for the page
+        if !msg_buf.is_empty() {
+            match state.db.batch_upsert_messages_multi(app_id, &msg_buf) {
+                Ok(count) => synced_messages += count as i64,
+                Err(_) => {
+                    for (cid, m) in &msg_buf {
+                        match state.db.upsert_message(app_id, cid, m) {
+                            Ok(_) => synced_messages += 1,
+                            Err(_) => failed_details += 1,
+                        }
+                    }
                 }
             }
         }
