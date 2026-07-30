@@ -200,7 +200,12 @@ impl DifyApiClient {
                     .query(&[
                         ("limit", limit.to_string()),
                         ("page", page.to_string()),
-                        ("sort_by", "-created_at".to_string()),
+                        // Sort by updated_at desc so incremental sync can stop early
+                        // once it reaches conversations unchanged since last sync.
+                        // Sorting by created_at (the old value) made that early-stop
+                        // unsound: an old conversation with new activity sits on a late
+                        // page and got missed when an earlier page was all-unchanged.
+                        ("sort_by", "-updated_at".to_string()),
                         ("annotation_status", "all".to_string()),
                     ]),
                 "获取对话列表失败",

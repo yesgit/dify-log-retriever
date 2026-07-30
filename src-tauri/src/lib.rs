@@ -631,7 +631,11 @@ async fn sync_chat_app(
             }
         }
 
-        // In incremental mode, if entire page was skipped, stop paginating
+        // In incremental mode, if an entire page is unchanged, stop paginating.
+        // Sound ONLY because fetch_conversations sorts by -updated_at: once a full
+        // page is unchanged, all later pages have older updated_at and are unchanged too.
+        // (If the sort ever changes back to -created_at, this breaks and misses updates
+        // to old conversations — see dify_api.rs fetch_conversations.)
         if is_incremental && !conv_resp.data.is_empty() && page_skipped == conv_resp.data.len() {
             break;
         }
