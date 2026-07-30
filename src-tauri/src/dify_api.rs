@@ -243,8 +243,11 @@ impl DifyApiClient {
     ) -> Result<Vec<DifyMessageItem>, String> {
         let mut all_messages: Vec<DifyMessageItem> = Vec::new();
         let mut cursor: Option<String> = None;
+        // Safety valve: cap pagination so a misbehaving cursor (server returning
+        // has_more=true without advancing) can't loop forever and stall the sync.
+        const MAX_MESSAGE_PAGES: usize = 500;
 
-        loop {
+        for _ in 0..MAX_MESSAGE_PAGES {
             let mut req = self
                 .authed_get(&format!("/apps/{}/chat-messages", app_id))
                 .query(&[
@@ -258,17 +261,19 @@ impl DifyApiClient {
 
             let value = self.send_value(req, "获取消息列表失败").await?;
             let result = messages_response_from_value(value)?;
+            let prev_cursor = cursor.clone();
             all_messages.extend(result.data);
 
-            if result.has_more {
-                if let Some(last) = all_messages.last() {
-                    cursor = Some(last.id.clone());
-                } else {
-                    break;
-                }
-            } else {
+            if !result.has_more {
                 break;
             }
+            // Stop if there is no next cursor, or it didn't advance since the last
+            // request (otherwise we'd re-fetch the same page forever).
+            let new_cursor = all_messages.last().map(|m| m.id.clone());
+            if new_cursor.is_none() || new_cursor == prev_cursor {
+                break;
+            }
+            cursor = new_cursor;
         }
 
         Ok(all_messages)

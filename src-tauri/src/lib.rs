@@ -20,6 +20,10 @@ const SYNC_CONCURRENCY: usize = 8;
 
 struct AppState {
     db: Database,
+    /// Serializes all sync operations so auto-sync and manual sync can't run
+    /// concurrently (they'd contend on the single DB connection mutex and risk
+    /// stalling the async runtime). Held across `.await`, so it's the async Mutex.
+    sync_lock: tokio::sync::Mutex<()>,
 }
 
 #[tauri::command]
@@ -200,6 +204,26 @@ async fn sync_app_data(
     incremental: Option<bool>,
     sync_workflow_details: Option<bool>,
 ) -> Result<SyncResult, String> {
+    // Hold the global sync lock so this can't overlap with auto-sync (or another
+    // manual sync). The lock is released when `_guard` drops at return.
+    let _guard = state.sync_lock.lock().await;
+    sync_app_data_inner(
+        &state,
+        &app_id,
+        incremental.unwrap_or(false),
+        sync_workflow_details.unwrap_or(false),
+    )
+    .await
+}
+
+/// Core sync logic for a single app. Callers must hold the global sync lock
+/// (see `sync_app_data` / `sync_all_apps`).
+async fn sync_app_data_inner(
+    state: &State<'_, AppState>,
+    app_id: &str,
+    incremental: bool,
+    sync_workflow_details: bool,
+) -> Result<SyncResult, String> {
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
 
@@ -232,12 +256,12 @@ async fn sync_app_data(
         }
     }?;
 
-    let fetch_wf = sync_workflow_details.unwrap_or(false);
+    let fetch_wf = sync_workflow_details;
 
     if app_mode == "workflow" {
-        sync_workflow_app(&state, &client, &app_id, incremental.unwrap_or(false), fetch_wf).await
+        sync_workflow_app(&state, &client, app_id, incremental, fetch_wf).await
     } else {
-        sync_chat_app(&state, &client, &app_id, incremental.unwrap_or(false), fetch_wf).await
+        sync_chat_app(&state, &client, app_id, incremental, fetch_wf).await
     }
 }
 
@@ -526,7 +550,6 @@ async fn sync_chat_app(
 
         // Collect results as they complete
         let mut convs_to_write: Vec<DifyConversationItem> = Vec::new();
-        let mut msgs_to_write: Vec<(String, DifyMessageItem)> = Vec::new();
         let mut page_run_ids: Vec<String> = Vec::new();
 
         while let Some(res) = set.join_next().await {
@@ -549,43 +572,44 @@ async fn sync_chat_app(
                     conv.clone()
                 }
             };
+            convs_to_write.push(final_conv);
 
             match messages_res {
                 Ok(messages) => {
                     total_messages += messages.len() as i64;
-                    for msg in messages {
-                        if fetch_workflow_details {
+                    if fetch_workflow_details {
+                        for msg in &messages {
                             if let Some(run_id) = msg.workflow_run_id.as_deref().filter(|id| !id.is_empty()) {
                                 page_run_ids.push(run_id.to_string());
                             }
                         }
-                        msgs_to_write.push((conv.id.clone(), msg));
+                    }
+                    // Write this conversation's messages immediately (bounded
+                    // transaction) rather than accumulating the whole page, which
+                    // could block the runtime on one giant transaction for apps
+                    // with conversations that have large message histories.
+                    if !messages.is_empty() {
+                        match state.db.batch_upsert_messages(app_id, &conv.id, &messages) {
+                            Ok(count) => synced_messages += count as i64,
+                            Err(_) => {
+                                for msg in &messages {
+                                    match state.db.upsert_message(app_id, &conv.id, msg) {
+                                        Ok(_) => synced_messages += 1,
+                                        Err(_) => failed_details += 1,
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Err(_) => {
                     failed_details += 1;
                 }
             }
-
-            convs_to_write.push(final_conv);
         }
 
-        // Batch DB writes for the whole page (2 transactions instead of N commits)
+        // Batch-write the page's conversations in one transaction (rows are small).
         state.db.batch_upsert_conversations(app_id, &convs_to_write)?;
-        if !msgs_to_write.is_empty() {
-            match state.db.batch_upsert_messages_multi(app_id, &msgs_to_write) {
-                Ok(count) => synced_messages += count as i64,
-                Err(_) => {
-                    // Fallback to per-row writes (preserves existing resilience)
-                    for (conv_id, msg) in &msgs_to_write {
-                        match state.db.upsert_message(app_id, conv_id, msg) {
-                            Ok(_) => synced_messages += 1,
-                            Err(_) => failed_details += 1,
-                        }
-                    }
-                }
-            }
-        }
 
         // Fetch workflow runs + node executions in parallel (bounded by the same semaphore)
         let run_ids: Vec<String> = page_run_ids.into_iter()
@@ -984,6 +1008,10 @@ async fn sync_all_apps(state: State<'_, AppState>, incremental: Option<bool>) ->
         return Ok("没有需要同步的应用".to_string());
     }
 
+    // Hold the global sync lock for the whole run so auto-sync can't overlap
+    // with a manual sync (or another auto-sync trigger).
+    let _guard = state.sync_lock.lock().await;
+
     let is_incremental = incremental.unwrap_or(true);
     let mut success_count = 0;
     let mut error_count = 0;
@@ -1003,13 +1031,7 @@ async fn sync_all_apps(state: State<'_, AppState>, incremental: Option<bool>) ->
             if !enabled {
                 continue;
             }
-            match sync_app_data(
-                state.clone(),
-                app.id.clone(),
-                Some(is_incremental),
-                Some(*sync_wf),
-            )
-            .await
+            match sync_app_data_inner(&state, &app.id, is_incremental, *sync_wf).await
             {
                 Ok(result) => {
                     success_count += 1;
@@ -1023,13 +1045,7 @@ async fn sync_all_apps(state: State<'_, AppState>, incremental: Option<bool>) ->
             }
         } else {
             // No config for this app - sync with defaults (enabled, no workflow details)
-            match sync_app_data(
-                state.clone(),
-                app.id.clone(),
-                Some(is_incremental),
-                None,
-            )
-            .await
+            match sync_app_data_inner(&state, &app.id, is_incremental, false).await
             {
                 Ok(result) => {
                     success_count += 1;
@@ -1291,7 +1307,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState { db })
+        .manage(AppState {
+            db,
+            sync_lock: tokio::sync::Mutex::new(()),
+        })
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
