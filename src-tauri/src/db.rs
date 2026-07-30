@@ -2858,6 +2858,10 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let msg_where = build_where(app_id, start_time, end_time);
         let msg_where_q = format!("query != '' AND {}", msg_where);
+        // Prefixed variant for queries that JOIN apps (created_at exists in both
+        // messages and apps, so bare created_at is ambiguous).
+        let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
+        let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
         let node_where = build_where_prefixed("ne.", app_id, start_time, end_time);
 
         // Model performance
@@ -3016,7 +3020,7 @@ impl Database {
              WHERE {}
              GROUP BY m.app_id, app_name
              ORDER BY msg_count DESC",
-            msg_where_q
+            msg_where_m_q
         );
         let mut agent_perf_stmt = conn.prepare(&agent_perf_sql).map_err(|e| e.to_string())?;
         let agent_performance: Vec<AgentPerformanceStats> = agent_perf_stmt.query_map([], |row| {
@@ -3057,7 +3061,7 @@ impl Database {
              WHERE {}
              GROUP BY m.app_id, app_name, day
              ORDER BY m.app_id, day",
-            msg_where_q
+            msg_where_m_q
         );
         let mut agent_daily_stmt = conn.prepare(&agent_daily_sql).map_err(|e| e.to_string())?;
         let agent_daily_performance: Vec<AgentDailyPerformance> = agent_daily_stmt.query_map([], |row| {
