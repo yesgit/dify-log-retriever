@@ -1552,14 +1552,14 @@ impl Database {
         }
         if let Some(sd) = start_date {
             if !sd.is_empty() {
-                conditions.push(format!("m.created_at >= strftime('%s', ?{})", param_idx));
+                conditions.push(format!("ne.created_at >= strftime('%s', ?{})", param_idx));
                 params.push(Box::new(sd.to_string()));
                 param_idx += 1;
             }
         }
         if let Some(ed) = end_date {
             if !ed.is_empty() {
-                conditions.push(format!("m.created_at < strftime('%s', ?{}, '+1 day')", param_idx));
+                conditions.push(format!("ne.created_at < strftime('%s', ?{}, '+1 day')", param_idx));
                 params.push(Box::new(ed.to_string()));
                 param_idx += 1;
             }
