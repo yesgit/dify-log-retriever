@@ -2555,9 +2555,15 @@ impl Database {
             &format!("SELECT COALESCE(SUM(message_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
             param_refs.as_slice(), |row| row.get(0),
         ).map_err(|e| e.to_string())?;
+        // user_count is non-additive across days (a user active on N days would be
+        // counted N times), so dedupe over the whole range like the raw path does.
+        let conv_where = build_conv_where(app_id, start_time, end_time);
         let total_users: i64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(user_count), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
-            param_refs.as_slice(), |row| row.get(0),
+            &format!(
+                "SELECT COUNT(DISTINCT from_end_user_id) FROM conversations c WHERE from_end_user_id != '' AND {}",
+                conv_where
+            ),
+            [], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
         let total_answer_tokens: i64 = conn.query_row(
             &format!("SELECT COALESCE(SUM(total_answer_tokens), 0) FROM dashboard_daily_stats dds WHERE {}", where_clause),
@@ -2618,7 +2624,6 @@ impl Database {
         // Distributions still need raw queries (not pre-aggregated)
         let msg_where = build_where(app_id, start_time, end_time);
         let msg_where_q = format!("query != '' AND {}", msg_where);
-        let conv_where = build_conv_where(app_id, start_time, end_time);
         let msg_where_m = build_where_prefixed("m.", app_id, start_time, end_time);
         let msg_where_m_q = format!("m.query != '' AND {}", msg_where_m);
 
