@@ -1316,6 +1316,266 @@ async fn backup_all_dsl(state: State<'_, AppState>, include_secret: Option<bool>
     Ok(results)
 }
 
+// ===== Knowledge Base (Datasets) =====
+
+/// Strip characters that are illegal/awkward in filenames while keeping
+/// unicode letters (CJK etc.); falls back to the doc/dataset id when nothing
+/// is left, and truncates to stay well under filesystem name limits.
+fn sanitize_file_name(name: &str, fallback: &str) -> String {
+    let sanitized: String = name
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    // Windows also dislikes trailing dots and spaces.
+    let trimmed = sanitized.trim().trim_end_matches('.').trim();
+    if trimmed.is_empty() {
+        return fallback.to_string();
+    }
+    let max_bytes = 180;
+    let mut byte_count = 0usize;
+    trimmed
+        .chars()
+        .take_while(|c| {
+            byte_count += c.len_utf8();
+            byte_count <= max_bytes
+        })
+        .collect()
+}
+
+/// Split a file name into (stem, extension-with-dot). Only treats the last
+/// dot as an extension when the tail looks like one (1..10 chars, no spaces).
+fn split_file_ext(name: &str) -> (String, String) {
+    match name.rfind('.') {
+        Some(pos) if pos > 0 && name.len() - pos <= 11 && !name[pos..].contains(' ') => {
+            (name[..pos].to_string(), name[pos..].to_string())
+        }
+        _ => (name.to_string(), String::new()),
+    }
+}
+
+/// Pick a non-colliding file name in `dir`, disambiguating with the document
+/// id suffixes so documents that share a name in Dify don't overwrite each
+/// other. Does not register the name; the caller must insert into `used_names`
+/// only after a successful write.
+fn pick_file_name(
+    dir: &std::path::Path,
+    used_names: &HashSet<String>,
+    stem: &str,
+    ext: &str,
+    doc_id: &str,
+) -> String {
+    let short_id: String = doc_id.chars().take(8).collect();
+    let candidates = [
+        format!("{}{}", stem, ext),
+        format!("{}_{}{}", stem, short_id, ext),
+        format!("{}_{}{}", stem, doc_id, ext),
+    ];
+    for cand in candidates.iter() {
+        if !used_names.contains(cand) && !dir.join(cand).exists() {
+            return cand.clone();
+        }
+    }
+    // Last resort: full uuid suffix (a collision here is practically impossible).
+    candidates[candidates.len() - 1].clone()
+}
+
+/// Download one document: prefer the original uploaded file via the signed
+/// download URL; fall back to text rebuilt from indexed segments (also covers
+/// Notion/website imports and older Dify builds without the download route).
+async fn try_download_document(
+    client: &DifyApiClient,
+    dataset_id: &str,
+    out_dir: &std::path::Path,
+    doc: &DatasetDocRef,
+    used_names: &mut HashSet<String>,
+) -> DatasetDocDownloadResult {
+    let base_name = sanitize_file_name(&doc.name, &doc.id);
+    let mut errors: Vec<String> = Vec::new();
+    let mut payload: Option<(Vec<u8>, String, &'static str)> = None;
+
+    // 1) Original uploaded file (notion/website imports don't have one).
+    let has_original = !matches!(doc.data_source_type.as_str(), "notion_import" | "website_crawl");
+    if has_original {
+        match client.fetch_document_download_url(dataset_id, &doc.id).await {
+            Ok(url) => match client.fetch_url_bytes(&url).await {
+                Ok(bytes) if !bytes.is_empty() => {
+                    let (stem, ext) = split_file_ext(&base_name);
+                    let filename = pick_file_name(out_dir, used_names, &stem, &ext, &doc.id);
+                    payload = Some((bytes, filename, "original"));
+                }
+                Ok(_) => errors.push("原始文件内容为空".to_string()),
+                Err(e) => errors.push(e),
+            },
+            Err(e) => errors.push(e),
+        }
+    }
+
+    // 2) Fallback: rebuild the document text from its segments.
+    if payload.is_none() {
+        match client.fetch_document_content(dataset_id, &doc.id).await {
+            Ok(text) if !text.trim().is_empty() => {
+                let (stem, ext) = split_file_ext(&base_name);
+                let (fname, fext) = if ext.eq_ignore_ascii_case(".txt") || ext.eq_ignore_ascii_case(".md") {
+                    (stem, ext)
+                } else {
+                    // Keep the original name visible; mark that this is rebuilt text.
+                    (base_name.clone(), ".txt".to_string())
+                };
+                let filename = pick_file_name(out_dir, used_names, &fname, &fext, &doc.id);
+                payload = Some((text.into_bytes(), filename, "text"));
+            }
+            Ok(_) => errors.push("文档没有可用的分段内容".to_string()),
+            Err(e) => errors.push(e),
+        }
+    }
+
+    let base = DatasetDocDownloadResult {
+        document_id: doc.id.clone(),
+        document_name: doc.name.clone(),
+        success: false,
+        saved_mode: None,
+        file_path: None,
+        error: None,
+    };
+
+    match payload {
+        Some((bytes, filename, mode)) => {
+            let path = out_dir.join(&filename);
+            match std::fs::write(&path, &bytes) {
+                Ok(_) => {
+                    used_names.insert(filename);
+                    DatasetDocDownloadResult {
+                        success: true,
+                        saved_mode: Some(mode.to_string()),
+                        file_path: Some(path.to_string_lossy().to_string()),
+                        ..base
+                    }
+                }
+                Err(e) => DatasetDocDownloadResult {
+                    error: Some(format!("写入文件失败: {}", e)),
+                    ..base
+                },
+            }
+        }
+        None => DatasetDocDownloadResult {
+            error: Some(if errors.is_empty() {
+                "下载失败".to_string()
+            } else {
+                errors.join("；")
+            }),
+            ..base
+        },
+    }
+}
+
+#[tauri::command]
+async fn fetch_knowledge_datasets(
+    state: State<'_, AppState>,
+    keyword: Option<String>,
+) -> Result<Vec<DifyDatasetItem>, String> {
+    let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
+    let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
+    match client.fetch_datasets(keyword.as_deref()).await {
+        Err(ref e) if DifyApiClient::is_auth_error(e) => {
+            let refreshed = try_auto_refresh(&state.db).await?;
+            let client = DifyApiClient::new(
+                &refreshed.api_base,
+                &refreshed.api_key,
+                refreshed.proxy.as_deref(),
+            )?;
+            client.fetch_datasets(keyword.as_deref()).await
+        }
+        other => other,
+    }
+}
+
+#[tauri::command]
+async fn fetch_knowledge_documents(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    keyword: Option<String>,
+) -> Result<Vec<DifyDatasetDocumentItem>, String> {
+    let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
+    let client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
+    match client.fetch_dataset_documents(&dataset_id, keyword.as_deref()).await {
+        Err(ref e) if DifyApiClient::is_auth_error(e) => {
+            let refreshed = try_auto_refresh(&state.db).await?;
+            let client = DifyApiClient::new(
+                &refreshed.api_base,
+                &refreshed.api_key,
+                refreshed.proxy.as_deref(),
+            )?;
+            client.fetch_dataset_documents(&dataset_id, keyword.as_deref()).await
+        }
+        other => other,
+    }
+}
+
+#[tauri::command]
+async fn download_knowledge_documents(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    dataset_name: String,
+    documents: Vec<DatasetDocRef>,
+    target_dir: String,
+) -> Result<Vec<DatasetDocDownloadResult>, String> {
+    if documents.is_empty() {
+        return Err("请先选择要下载的文档".to_string());
+    }
+    if target_dir.trim().is_empty() {
+        return Err("请先选择下载目录".to_string());
+    }
+    let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
+    let mut client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
+
+    let folder = sanitize_file_name(&dataset_name, &dataset_id);
+    let out_dir = std::path::PathBuf::from(target_dir.trim()).join(&folder);
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("创建下载目录失败: {}", e))?;
+
+    let mut used_names: HashSet<String> = HashSet::new();
+    let mut results: Vec<DatasetDocDownloadResult> = Vec::new();
+
+    for doc in &documents {
+        let mut res = try_download_document(&client, &dataset_id, &out_dir, doc, &mut used_names).await;
+        // A 401 mid-run means the console token expired: refresh once and retry
+        // this document (mirrors the auto-refresh in backup_all_dsl).
+        let auth_failed = !res.success
+            && res
+                .error
+                .as_deref()
+                .map_or(false, |e| DifyApiClient::is_auth_error(e));
+        if auth_failed {
+            match try_auto_refresh(&state.db).await {
+                Ok(refreshed) => {
+                    client = DifyApiClient::new(
+                        &refreshed.api_base,
+                        &refreshed.api_key,
+                        refreshed.proxy.as_deref(),
+                    )?;
+                    res =
+                        try_download_document(&client, &dataset_id, &out_dir, doc, &mut used_names)
+                            .await;
+                }
+                Err(refresh_err) => {
+                    let prev = res
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "Token 已过期".to_string());
+                    res.error = Some(format!("{}（自动刷新 Token 失败: {}）", prev, refresh_err));
+                }
+            }
+        }
+        results.push(res);
+    }
+
+    Ok(results)
+}
+
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -1372,6 +1632,9 @@ pub fn run() {
             get_dsl_backup_settings,
             save_dsl_backup_settings,
             backup_all_dsl,
+            fetch_knowledge_datasets,
+            fetch_knowledge_documents,
+            download_knowledge_documents,
             get_app_version,
         ])
         .run(tauri::generate_context!())

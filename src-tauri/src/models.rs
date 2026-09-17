@@ -770,6 +770,81 @@ pub struct DslBackupResult {
     pub error: Option<String>,
 }
 
+// ===== Knowledge Base (Datasets) =====
+// Pagination terminates on a short page; `has_more` is deliberately not
+// modeled since some Dify builds omit it from these list responses.
+#[derive(Debug, Deserialize)]
+pub struct DifyDatasetsResponse {
+    #[serde(default)]
+    pub data: Vec<DifyDatasetItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifyDatasetItem {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub indexing_technique: String,
+    #[serde(default)]
+    pub document_count: i64,
+    #[serde(default)]
+    pub word_count: i64,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DifyDatasetDocumentsResponse {
+    #[serde(default)]
+    pub data: Vec<DifyDatasetDocumentItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifyDatasetDocumentItem {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub data_source_type: String,
+    #[serde(default)]
+    pub indexing_status: String,
+    #[serde(default)]
+    pub word_count: i64,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub position: i64,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Reference to a knowledge-base document chosen for download, passed from
+/// the frontend so the backend doesn't need to re-fetch document details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetDocRef {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub data_source_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetDocDownloadResult {
+    pub document_id: String,
+    pub document_name: String,
+    pub success: bool,
+    /// "original" = the original uploaded file; "text" = text rebuilt from segments
+    pub saved_mode: Option<String>,
+    pub file_path: Option<String>,
+    pub error: Option<String>,
+}
+
 // ===== Database Maintenance =====
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbSizeInfo {

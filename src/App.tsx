@@ -12,6 +12,7 @@ import { DashboardPage } from './components/DashboardPage';
 import { PerformancePage } from './components/PerformancePage';
 import { ExportPage } from './components/ExportPage';
 import DslBackupPage from './components/DslBackupPage';
+import KnowledgeBasePage from './components/KnowledgeBasePage';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('config');
@@ -300,6 +301,8 @@ function App() {
         return <ExportPage />;
       case 'dsl-backup':
         return <DslBackupPage />;
+      case 'knowledge':
+        return <KnowledgeBasePage />;
       default:
         return <ConfigPage />;
     }

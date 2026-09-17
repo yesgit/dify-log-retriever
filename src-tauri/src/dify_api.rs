@@ -8,6 +8,10 @@ use crate::models::*;
 #[derive(Clone)]
 pub struct DifyApiClient {
     client: Client,
+    /// Client for fetching large payloads (knowledge-base document files).
+    /// Has no overall request timeout so a slow download of a big original
+    /// file isn't killed by the 30s API timeout.
+    file_client: Client,
     api_base: String,
     api_key: String,
 }
@@ -15,7 +19,21 @@ pub struct DifyApiClient {
 impl DifyApiClient {
     pub fn new(api_base: &str, api_key: &str, proxy: Option<&str>) -> Result<Self, String> {
         let base = api_base.trim_end_matches('/').to_string();
-        let mut builder = Client::builder().timeout(Duration::from_secs(30));
+        let client = Self::build_http_client(Some(Duration::from_secs(30)), proxy)?;
+        let file_client = Self::build_http_client(None, proxy)?;
+        Ok(Self {
+            client,
+            file_client,
+            api_base: base,
+            api_key: api_key.to_string(),
+        })
+    }
+
+    fn build_http_client(timeout: Option<Duration>, proxy: Option<&str>) -> Result<Client, String> {
+        let mut builder = Client::builder();
+        if let Some(t) = timeout {
+            builder = builder.timeout(t);
+        }
 
         if let Some(proxy_url) = proxy {
             let trimmed = proxy_url.trim();
@@ -26,14 +44,9 @@ impl DifyApiClient {
             }
         }
 
-        let client = builder
+        builder
             .build()
-            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-        Ok(Self {
-            client,
-            api_base: base,
-            api_key: api_key.to_string(),
-        })
+            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
     }
 
     fn console_url(&self, path: &str) -> String {
@@ -353,6 +366,191 @@ impl DifyApiClient {
             .await?;
         let response = node_executions_response_from_value(value)?;
         Ok(response.data)
+    }
+
+    // ===== Knowledge Base: list datasets (all pages) =====
+    pub async fn fetch_datasets(&self, keyword: Option<&str>) -> Result<Vec<DifyDatasetItem>, String> {
+        let mut all: Vec<DifyDatasetItem> = Vec::new();
+        let mut page: i64 = 1;
+        let limit: i64 = 100;
+        // Safety valve against a server that never flips has_more.
+        const MAX_PAGES: i64 = 200;
+
+        loop {
+            let mut req = self.authed_get("/datasets").query(&[
+                ("page", page.to_string()),
+                ("limit", limit.to_string()),
+            ]);
+            if let Some(kw) = keyword.map(str::trim).filter(|s| !s.is_empty()) {
+                req = req.query(&[("keyword", kw.to_string())]);
+            }
+
+            let result: DifyDatasetsResponse = self
+                .send_json(req, "获取知识库列表失败")
+                .await?;
+            let fetched_count = result.data.len();
+            all.extend(result.data);
+
+            // Don't rely on has_more: some Dify builds omit it, so a short page
+            // is the only universally reliable end-of-list signal.
+            if fetched_count < limit as usize || page >= MAX_PAGES {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(all)
+    }
+
+    // ===== Knowledge Base: list documents in a dataset (all pages) =====
+    pub async fn fetch_dataset_documents(
+        &self,
+        dataset_id: &str,
+        keyword: Option<&str>,
+    ) -> Result<Vec<DifyDatasetDocumentItem>, String> {
+        let mut all: Vec<DifyDatasetDocumentItem> = Vec::new();
+        let mut page: i64 = 1;
+        let limit: i64 = 100;
+        const MAX_PAGES: i64 = 500;
+        // Newer Dify exposes GET /datasets/{id}/documents; older builds only
+        // had /datasets/{id}/document_list. Switch on the first 404.
+        let mut path = format!("/datasets/{}/documents", dataset_id);
+
+        loop {
+            let mut req = self.authed_get(&path).query(&[
+                ("page", page.to_string()),
+                ("limit", limit.to_string()),
+            ]);
+            if let Some(kw) = keyword.map(str::trim).filter(|s| !s.is_empty()) {
+                req = req.query(&[("keyword", kw.to_string())]);
+            }
+
+            let result: DifyDatasetDocumentsResponse = match self
+                .send_json(req, "获取文档列表失败")
+                .await
+            {
+                // 405 on old builds where the route only accepts POST.
+                Err(e)
+                    if page == 1
+                        && (e.contains("(404") || e.contains("(405"))
+                        && path.ends_with("/documents") =>
+                {
+                    path = format!("/datasets/{}/document_list", dataset_id);
+                    continue;
+                }
+                other => other?,
+            };
+
+            let fetched_count = result.data.len();
+            all.extend(result.data);
+
+            if fetched_count < limit as usize || page >= MAX_PAGES {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(all)
+    }
+
+    // ===== Knowledge Base: signed download URL for the original file =====
+    pub async fn fetch_document_download_url(
+        &self,
+        dataset_id: &str,
+        document_id: &str,
+    ) -> Result<String, String> {
+        let value = self
+            .send_value(
+                self.authed_get(&format!(
+                    "/datasets/{}/documents/{}/download",
+                    dataset_id, document_id
+                )),
+                "获取文档下载地址失败",
+            )
+            .await?;
+
+        // Response: { "url": "<signed url>" }; a few versions used download_url.
+        let url = value
+            .get("url")
+            .or_else(|| value.get("download_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if url.is_empty() {
+            return Err("文档下载地址为空".to_string());
+        }
+        Ok(url)
+    }
+
+    /// Fetch raw bytes from a (signed, unauthenticated) storage URL.
+    pub async fn fetch_url_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
+        let resp = self
+            .file_client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("下载文件失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("下载文件失败 ({}): {}", status, body));
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("读取文件内容失败: {}", e))?;
+        Ok(bytes.to_vec())
+    }
+
+    // ===== Knowledge Base: rebuild document text by paging through segments =====
+    pub async fn fetch_document_content(
+        &self,
+        dataset_id: &str,
+        document_id: &str,
+    ) -> Result<String, String> {
+        let mut parts: Vec<String> = Vec::new();
+        let mut page: i64 = 1;
+        let limit: i64 = 100;
+        const MAX_PAGES: i64 = 1000;
+
+        loop {
+            let value = self
+                .send_value(
+                    self.authed_get(&format!(
+                        "/datasets/{}/documents/{}/segments",
+                        dataset_id, document_id
+                    ))
+                    .query(&[
+                        ("page", page.to_string()),
+                        ("limit", limit.to_string()),
+                    ]),
+                    "获取文档分段失败",
+                )
+                .await?;
+
+            let items = value
+                .get("data")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let fetched_count = items.len();
+            for seg in items {
+                if let Some(content) = seg.get("content").and_then(|v| v.as_str()) {
+                    parts.push(content.to_string());
+                }
+            }
+
+            let has_more = value.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !has_more || fetched_count == 0 || page >= MAX_PAGES {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(parts.join("\n\n"))
     }
 }
 

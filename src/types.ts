@@ -1,5 +1,5 @@
 // ===== Page State =====
-export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'messages' | 'dashboard' | 'performance' | 'export' | 'feedback' | 'dsl-backup';
+export type Page = 'config' | 'apps' | 'sync' | 'conversations' | 'messages' | 'dashboard' | 'performance' | 'export' | 'feedback' | 'dsl-backup' | 'knowledge';
 
 // ===== Config =====
 export interface DifyConfig {
@@ -367,6 +367,39 @@ export interface DslBackupResult {
   app_id: string;
   app_name: string;
   success: boolean;
+  file_path: string | null;
+  error: string | null;
+}
+
+// ===== Knowledge Base (Datasets) =====
+export interface DifyDataset {
+  id: string;
+  name: string;
+  description: string;
+  indexing_technique?: string;
+  document_count: number;
+  word_count: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface DifyDatasetDocument {
+  id: string;
+  name: string;
+  data_source_type: string;
+  indexing_status: string;
+  word_count: number;
+  created_at: number;
+  position?: number;
+  enabled: boolean;
+}
+
+export interface DatasetDocDownloadResult {
+  document_id: string;
+  document_name: string;
+  success: boolean;
+  // 'original' = 原始上传文件, 'text' = 由分段重建的文本
+  saved_mode: string | null;
   file_path: string | null;
   error: string | null;
 }
