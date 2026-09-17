@@ -1393,6 +1393,7 @@ async fn try_download_document(
     out_dir: &std::path::Path,
     doc: &DatasetDocRef,
     used_names: &mut HashSet<String>,
+    with_markers: bool,
 ) -> DatasetDocDownloadResult {
     let base_name = sanitize_file_name(&doc.name, &doc.id);
     let mut errors: Vec<String> = Vec::new();
@@ -1417,7 +1418,7 @@ async fn try_download_document(
 
     // 2) Fallback: rebuild the document text from its segments.
     if payload.is_none() {
-        match client.fetch_document_content(dataset_id, &doc.id).await {
+        match client.fetch_document_content(dataset_id, &doc.id, with_markers).await {
             Ok(text) if !text.trim().is_empty() => {
                 let (stem, ext) = split_file_ext(&base_name);
                 let (fname, fext) = if ext.eq_ignore_ascii_case(".txt") || ext.eq_ignore_ascii_case(".md") {
@@ -1523,6 +1524,7 @@ async fn download_knowledge_documents(
     dataset_name: String,
     documents: Vec<DatasetDocRef>,
     target_dir: String,
+    with_markers: Option<bool>,
 ) -> Result<Vec<DatasetDocDownloadResult>, String> {
     if documents.is_empty() {
         return Err("请先选择要下载的文档".to_string());
@@ -1530,6 +1532,10 @@ async fn download_knowledge_documents(
     if target_dir.trim().is_empty() {
         return Err("请先选择下载目录".to_string());
     }
+    // Applies only to the segment-rebuilt TXT fallback: inject a visible
+    // ======== 分段 N ======== marker between chunks (the original chunking
+    // separator is not stored in segment content and can't be restored).
+    let with_markers = with_markers.unwrap_or(true);
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let mut client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
 
@@ -1541,7 +1547,9 @@ async fn download_knowledge_documents(
     let mut results: Vec<DatasetDocDownloadResult> = Vec::new();
 
     for doc in &documents {
-        let mut res = try_download_document(&client, &dataset_id, &out_dir, doc, &mut used_names).await;
+        let mut res =
+            try_download_document(&client, &dataset_id, &out_dir, doc, &mut used_names, with_markers)
+                .await;
         // A 401 mid-run means the console token expired: refresh once and retry
         // this document (mirrors the auto-refresh in backup_all_dsl).
         let auth_failed = !res.success
@@ -1557,9 +1565,15 @@ async fn download_knowledge_documents(
                         &refreshed.api_key,
                         refreshed.proxy.as_deref(),
                     )?;
-                    res =
-                        try_download_document(&client, &dataset_id, &out_dir, doc, &mut used_names)
-                            .await;
+                    res = try_download_document(
+                        &client,
+                        &dataset_id,
+                        &out_dir,
+                        doc,
+                        &mut used_names,
+                        with_markers,
+                    )
+                    .await;
                 }
                 Err(refresh_err) => {
                     let prev = res

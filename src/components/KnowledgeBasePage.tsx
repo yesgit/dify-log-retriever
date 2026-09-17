@@ -51,6 +51,7 @@ export default function KnowledgeBasePage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const [targetDir, setTargetDir] = useState(loadSavedDir);
+  const [withMarkers, setWithMarkers] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [results, setResults] = useState<DatasetDocDownloadResult[] | null>(null);
   const [error, setError] = useState('');
@@ -159,6 +160,7 @@ export default function KnowledgeBasePage() {
         datasetName: selectedDataset!.name,
         documents: refs,
         targetDir: targetDir.trim(),
+        withMarkers,
       });
       setResults(r);
       const failed = r.filter((x) => !x.success).length;
@@ -314,6 +316,18 @@ export default function KnowledgeBasePage() {
                   浏览
                 </button>
               </div>
+              <label className="flex items-center gap-2 mb-2">
+                <input
+                  type="checkbox"
+                  checked={withMarkers}
+                  onChange={(e) => setWithMarkers(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-600">
+                  分段文本重建时插入「======== 分段 N ========」标记
+                  <span className="text-gray-400">（仅影响无原始文件、按分段重建为 TXT 的文档；Dify 切分时不会保留原始分隔符，只能显式插入）</span>
+                </span>
+              </label>
               {!targetDir.trim() && (
                 <p className="text-sm text-amber-600 mb-2">请先设置下载目录</p>
               )}

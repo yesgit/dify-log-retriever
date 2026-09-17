@@ -510,8 +510,14 @@ impl DifyApiClient {
         &self,
         dataset_id: &str,
         document_id: &str,
+        with_markers: bool,
     ) -> Result<String, String> {
-        let mut parts: Vec<String> = Vec::new();
+        // Segment rows do NOT contain the separator Dify used when chunking, so
+        // chunk boundaries are only visible if we inject markers. Collect
+        // (position, content, answer) and sort by position so the rebuild order
+        // doesn't depend on the list API's paging order. In QA mode the answer
+        // lives in its own field and would be dropped if we only kept content.
+        let mut items: Vec<(i64, String, Option<String>)> = Vec::new();
         let mut page: i64 = 1;
         let limit: i64 = 100;
         const MAX_PAGES: i64 = 1000;
@@ -531,16 +537,31 @@ impl DifyApiClient {
                 )
                 .await?;
 
-            let items = value
+            let arr = value
                 .get("data")
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let fetched_count = items.len();
-            for seg in items {
-                if let Some(content) = seg.get("content").and_then(|v| v.as_str()) {
-                    parts.push(content.to_string());
+            let fetched_count = arr.len();
+            for (i, seg) in arr.iter().enumerate() {
+                let content = seg
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if content.is_empty() {
+                    continue;
                 }
+                let position = seg
+                    .get("position")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(i as i64);
+                let answer = seg
+                    .get("answer")
+                    .and_then(|v| v.as_str())
+                    .filter(|a| !a.trim().is_empty())
+                    .map(|a| a.to_string());
+                items.push((position, content, answer));
             }
 
             let has_more = value.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -550,7 +571,24 @@ impl DifyApiClient {
             page += 1;
         }
 
-        Ok(parts.join("\n\n"))
+        items.sort_by_key(|(position, _, _)| *position);
+
+        let mut out = String::new();
+        for (idx, (_, content, answer)) in items.iter().enumerate() {
+            if idx > 0 {
+                if with_markers {
+                    out.push_str(&format!("\n\n======== 分段 {} ========\n\n", idx + 1));
+                } else {
+                    out.push_str("\n\n");
+                }
+            }
+            match answer {
+                // QA 模式：按 Dify 的问答文本格式写为「问题 \t 答案」
+                Some(ans) => out.push_str(&format!("{}\t{}", content, ans)),
+                None => out.push_str(content),
+            }
+        }
+        Ok(out)
     }
 }
 
