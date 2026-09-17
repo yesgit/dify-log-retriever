@@ -1563,12 +1563,12 @@ async fn download_knowledge_documents(
     dataset_name: String,
     documents: Vec<DatasetDocRef>,
     target_dir: String,
-    /// How to glue rebuilt TXT together: "original" (read the document's own
-    /// chunking separator from its process rule) | "custom" | "marker".
-    /// Applies only to segment-rebuilt documents; original files untouched.
+    // How to glue rebuilt TXT together: "original" (read the document's own
+    // chunking separator from its process rule) | "custom" | "marker".
+    // Applies only to segment-rebuilt documents; original files untouched.
     separator_mode: Option<String>,
-    /// Separator text when separator_mode = "custom" (escapes like \n \t are
-    /// expanded). Defaults to "\n".
+    // Separator text when separator_mode = "custom" (escapes like \n \t are
+    // expanded). Defaults to "\n".
     separator: Option<String>,
 ) -> Result<Vec<DatasetDocDownloadResult>, String> {
     if documents.is_empty() {
