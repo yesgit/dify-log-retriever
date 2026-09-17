@@ -6,6 +6,8 @@ import type { DifyDataset, DifyDatasetDocument, DatasetDocDownloadResult } from 
 
 const DIR_STORAGE_KEY = 'knowledge-download-dir';
 
+type SepMode = 'original' | 'custom' | 'marker';
+
 function loadSavedDir(): string {
   try {
     return localStorage.getItem(DIR_STORAGE_KEY) || '';
@@ -51,7 +53,8 @@ export default function KnowledgeBasePage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const [targetDir, setTargetDir] = useState(loadSavedDir);
-  const [withMarkers, setWithMarkers] = useState(true);
+  const [sepMode, setSepMode] = useState<SepMode>('original');
+  const [sepCustom, setSepCustom] = useState('\\n');
   const [downloading, setDownloading] = useState(false);
   const [results, setResults] = useState<DatasetDocDownloadResult[] | null>(null);
   const [error, setError] = useState('');
@@ -160,7 +163,8 @@ export default function KnowledgeBasePage() {
         datasetName: selectedDataset!.name,
         documents: refs,
         targetDir: targetDir.trim(),
-        withMarkers,
+        separatorMode: sepMode,
+        separator: sepMode === 'custom' ? sepCustom : null,
       });
       setResults(r);
       const failed = r.filter((x) => !x.success).length;
@@ -316,18 +320,44 @@ export default function KnowledgeBasePage() {
                   浏览
                 </button>
               </div>
-              <label className="flex items-center gap-2 mb-2">
-                <input
-                  type="checkbox"
-                  checked={withMarkers}
-                  onChange={(e) => setWithMarkers(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-600">
-                  分段文本重建时插入「======== 分段 N ========」标记
-                  <span className="text-gray-400">（仅影响无原始文件、按分段重建为 TXT 的文档；Dify 切分时不会保留原始分隔符，只能显式插入）</span>
-                </span>
-              </label>
+              <div className="flex items-center gap-4 mb-1 flex-wrap">
+                <span className="text-sm text-gray-600">重建 TXT 分隔符：</span>
+                {(
+                  [
+                    ['original', '原文档分隔符'],
+                    ['custom', '自定义分隔符'],
+                    ['marker', '分段标记'],
+                  ] as [SepMode, string][]
+                ).map(([mode, label]) => (
+                  <label key={mode} className="flex items-center gap-1.5 text-sm text-gray-600">
+                    <input
+                      type="radio"
+                      name="sep-mode"
+                      checked={sepMode === mode}
+                      onChange={() => setSepMode(mode)}
+                      className="w-3.5 h-3.5 text-blue-600 focus:ring-blue-500"
+                    />
+                    {label}
+                  </label>
+                ))}
+                {sepMode === 'custom' && (
+                  <input
+                    type="text"
+                    value={sepCustom}
+                    onChange={(e) => setSepCustom(e.target.value)}
+                    placeholder="\n"
+                    className="w-40 px-2 py-1 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                )}
+              </div>
+              <p className="text-xs text-gray-400 mb-2">
+                {sepMode === 'custom'
+                  ? '支持转义：\\n 换行、\\t 制表符、\\r 回车；其余字符按字面处理'
+                  : '仅影响无原始文件、按分段重建为 TXT 的文档。' +
+                    (sepMode === 'original'
+                      ? '读取文档在 Dify 里的切分分隔符设置；自动切分的文档没有显式分隔符，回退为 \\n\\n'
+                      : '在分段之间插入「======== 分段 N ========」醒目边界行')}
+              </p>
               {!targetDir.trim() && (
                 <p className="text-sm text-amber-600 mb-2">请先设置下载目录</p>
               )}

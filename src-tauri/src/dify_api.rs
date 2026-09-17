@@ -505,15 +505,56 @@ impl DifyApiClient {
         Ok(bytes.to_vec())
     }
 
+    /// Read the document's own chunking separator from its process rule
+    /// (document-level rule first, then dataset-level). Returns None when the
+    /// doc uses automatic chunking or the rule carries no separator.
+    pub async fn fetch_document_separator(
+        &self,
+        dataset_id: &str,
+        document_id: &str,
+    ) -> Result<Option<String>, String> {
+        let value = self
+            .send_value(
+                self.authed_get(&format!(
+                    "/datasets/{}/documents/{}",
+                    dataset_id, document_id
+                )),
+                "获取文档详情失败",
+            )
+            .await?;
+
+        fn extract(v: &serde_json::Value) -> Option<String> {
+            let sep = v
+                .pointer("/rules/segmentation/separator")
+                .or_else(|| v.pointer("/segmentation/separator"))?
+                .as_str()?;
+            (!sep.is_empty()).then(|| sep.to_string())
+        }
+
+        let doc_rule = value
+            .get("document_process_rule")
+            .filter(|v| !v.is_null())
+            .and_then(extract);
+        if doc_rule.is_some() {
+            return Ok(doc_rule);
+        }
+        Ok(value.get("dataset_process_rule").and_then(|v| match v {
+            // Map of rule_id -> rule object
+            serde_json::Value::Object(map) => map.values().find_map(extract),
+            other => extract(other),
+        }))
+    }
+
     // ===== Knowledge Base: rebuild document text by paging through segments =====
     pub async fn fetch_document_content(
         &self,
         dataset_id: &str,
         document_id: &str,
-        with_markers: bool,
+        join: &SegmentJoin,
     ) -> Result<String, String> {
-        // Segment rows do NOT contain the separator Dify used when chunking, so
-        // chunk boundaries are only visible if we inject markers. Collect
+        // Segment rows do NOT contain the separator Dify used when chunking;
+        // the caller supplies the glue (document's own separator read from its
+        // process rule, a custom string, or a visible marker). Collect
         // (position, content, answer) and sort by position so the rebuild order
         // doesn't depend on the list API's paging order. In QA mode the answer
         // lives in its own field and would be dropped if we only kept content.
@@ -576,10 +617,11 @@ impl DifyApiClient {
         let mut out = String::new();
         for (idx, (_, content, answer)) in items.iter().enumerate() {
             if idx > 0 {
-                if with_markers {
-                    out.push_str(&format!("\n\n======== 分段 {} ========\n\n", idx + 1));
-                } else {
-                    out.push_str("\n\n");
+                match join {
+                    SegmentJoin::Text(sep) => out.push_str(sep),
+                    SegmentJoin::Marker => {
+                        out.push_str(&format!("\n\n======== 分段 {} ========\n\n", idx + 1))
+                    }
                 }
             }
             match answer {

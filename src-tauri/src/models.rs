@@ -834,6 +834,16 @@ pub struct DatasetDocRef {
     pub data_source_type: String,
 }
 
+/// How to glue rebuilt segment texts back together.
+#[derive(Debug, Clone)]
+pub enum SegmentJoin {
+    /// Insert this literal text between segments (e.g. the document's own
+    /// chunking separator, or a user-provided one)
+    Text(String),
+    /// Insert a visible ======== 分段 N ======== marker between segments
+    Marker,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetDocDownloadResult {
     pub document_id: String,

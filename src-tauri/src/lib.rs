@@ -1384,6 +1384,31 @@ fn pick_file_name(
     candidates[candidates.len() - 1].clone()
 }
 
+/// Expand the common escapes users type into separator inputs:
+/// \n \r \t \\ — anything else after a backslash is kept verbatim.
+fn unescape_separator(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 /// Download one document: prefer the original uploaded file via the signed
 /// download URL; fall back to text rebuilt from indexed segments (also covers
 /// Notion/website imports and older Dify builds without the download route).
@@ -1393,7 +1418,8 @@ async fn try_download_document(
     out_dir: &std::path::Path,
     doc: &DatasetDocRef,
     used_names: &mut HashSet<String>,
-    with_markers: bool,
+    separator_mode: &str,
+    custom_separator: &str,
 ) -> DatasetDocDownloadResult {
     let base_name = sanitize_file_name(&doc.name, &doc.id);
     let mut errors: Vec<String> = Vec::new();
@@ -1418,7 +1444,20 @@ async fn try_download_document(
 
     // 2) Fallback: rebuild the document text from its segments.
     if payload.is_none() {
-        match client.fetch_document_content(dataset_id, &doc.id, with_markers).await {
+        let join = match separator_mode {
+            "marker" => SegmentJoin::Marker,
+            "custom" => SegmentJoin::Text(custom_separator.to_string()),
+            // "original": ask Dify which separator the doc was chunked with;
+            // automatic chunking (or no rule stored) has none, fall back to \n\n.
+            _ => client
+                .fetch_document_separator(dataset_id, &doc.id)
+                .await
+                .ok()
+                .flatten()
+                .map(SegmentJoin::Text)
+                .unwrap_or_else(|| SegmentJoin::Text("\n\n".to_string())),
+        };
+        match client.fetch_document_content(dataset_id, &doc.id, &join).await {
             Ok(text) if !text.trim().is_empty() => {
                 let (stem, ext) = split_file_ext(&base_name);
                 let (fname, fext) = if ext.eq_ignore_ascii_case(".txt") || ext.eq_ignore_ascii_case(".md") {
@@ -1524,7 +1563,13 @@ async fn download_knowledge_documents(
     dataset_name: String,
     documents: Vec<DatasetDocRef>,
     target_dir: String,
-    with_markers: Option<bool>,
+    /// How to glue rebuilt TXT together: "original" (read the document's own
+    /// chunking separator from its process rule) | "custom" | "marker".
+    /// Applies only to segment-rebuilt documents; original files untouched.
+    separator_mode: Option<String>,
+    /// Separator text when separator_mode = "custom" (escapes like \n \t are
+    /// expanded). Defaults to "\n".
+    separator: Option<String>,
 ) -> Result<Vec<DatasetDocDownloadResult>, String> {
     if documents.is_empty() {
         return Err("请先选择要下载的文档".to_string());
@@ -1532,10 +1577,9 @@ async fn download_knowledge_documents(
     if target_dir.trim().is_empty() {
         return Err("请先选择下载目录".to_string());
     }
-    // Applies only to the segment-rebuilt TXT fallback: inject a visible
-    // ======== 分段 N ======== marker between chunks (the original chunking
-    // separator is not stored in segment content and can't be restored).
-    let with_markers = with_markers.unwrap_or(true);
+    let separator_mode = separator_mode.unwrap_or_else(|| "original".to_string());
+    let custom_separator =
+        unescape_separator(separator.as_deref().unwrap_or("\\n"));
     let config = state.db.get_config()?.ok_or("请先配置连接信息")?;
     let mut client = DifyApiClient::new(&config.api_base, &config.api_key, config.proxy.as_deref())?;
 
@@ -1547,9 +1591,16 @@ async fn download_knowledge_documents(
     let mut results: Vec<DatasetDocDownloadResult> = Vec::new();
 
     for doc in &documents {
-        let mut res =
-            try_download_document(&client, &dataset_id, &out_dir, doc, &mut used_names, with_markers)
-                .await;
+        let mut res = try_download_document(
+            &client,
+            &dataset_id,
+            &out_dir,
+            doc,
+            &mut used_names,
+            &separator_mode,
+            &custom_separator,
+        )
+        .await;
         // A 401 mid-run means the console token expired: refresh once and retry
         // this document (mirrors the auto-refresh in backup_all_dsl).
         let auth_failed = !res.success
@@ -1571,7 +1622,8 @@ async fn download_knowledge_documents(
                         &out_dir,
                         doc,
                         &mut used_names,
-                        with_markers,
+                        &separator_mode,
+                        &custom_separator,
                     )
                     .await;
                 }
