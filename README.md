@@ -8,6 +8,7 @@
 - 手动增量同步：拉取会话、消息、workflow run、node executions，按 Dify ID upsert 去重。
 - 原始副本归档：SQLite 保存 Dify 返回的完整 JSON。
 - 数据导出：支持会话导出、消息导出和节点评测导出，其中会话/消息支持 Excel、CSV、JSON、JSONL。
+- 单会话导出：在「对话浏览」页将选中会话导出为完整 JSON 归档，可选包含 workflow/节点执行详情与原始 JSON。
 - 知识库文档下载：浏览 Dify 知识库（数据集）及其文档列表，按勾选或整库批量下载到本地目录。上传文件类文档直接下载原始文件；Notion/网页导入、或旧版 Dify 无下载接口时，回退为抓取分段内容重建为 TXT。重建时可选择分隔符：原文档切分分隔符（默认，读取文档处理规则，自动切分时回退 `\n\n`）、自定义分隔符（支持 `\n`/`\t` 转义）、或插入「======== 分段 N ========」标记。同名文档会自动追加文档 ID 后缀避免覆盖。
 
 ### 导出字段说明（会话导出）
@@ -17,6 +18,13 @@
 - 成功/失败消息数来自会话级 `status_count` 聚合；`partial_success` 会保留在 JSON/JSONL 原始统计字段中。
 - 用户反馈和管理员反馈已拆分为独立的赞/踩数量列，便于表格统计与筛选。
 - JSON/JSONL 与 CSV 使用同一组会话维度字段，并额外保留原始统计字段以便后续分析。
+
+### 导出字段说明（单会话导出）
+
+- 输出为一个 JSON 归档文件，顶层包含 `exported_at`、`conversation`、`message_count`、`messages`。
+- `conversation` 为会话详情（名称、来源、反馈统计、状态计数等）；`messages` 为按时间排序的消息详情数组。
+- 勾选「包含 workflow / 节点执行详情」时，消息会额外带出 `workflow_run` 和 `node_executions`。
+- 勾选「包含原始 JSON」时保留消息、workflow run 与会话的 `raw_json`；该选项会明显增大文件体积。
 
 ### 导出字段说明（消息导出）
 
