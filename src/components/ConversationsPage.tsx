@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Search, ChevronLeft, ChevronRight, User, Clock, ThumbsUp, ThumbsDown, Minus, Loader2, GitBranch, AlertCircle, FileJson } from 'lucide-react';
+import { save } from '@tauri-apps/plugin-dialog';
+import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { MessageSquare, Search, ChevronLeft, ChevronRight, User, Clock, ThumbsUp, ThumbsDown, Minus, Loader2, GitBranch, AlertCircle, FileJson, Download, X, FolderOpen, ExternalLink } from 'lucide-react';
 import type { ConversationSummary, MessageDetail, ConversationsResult, NodeExecutionDetail } from '../types';
 
 export function ConversationsPage() {
@@ -15,6 +17,14 @@ export function ConversationsPage() {
   const [loading, setLoading] = useState(false);
   const [msgLoading, setMsgLoading] = useState(false);
   const [searchTrigger, setSearchTrigger] = useState(0);
+  const [selectedMeta, setSelectedMeta] = useState<ConversationSummary | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [includeDetails, setIncludeDetails] = useState(true);
+  const [includeRawJson, setIncludeRawJson] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportResult, setExportResult] = useState<string | null>(null);
+  const [exportFilePath, setExportFilePath] = useState<string | null>(null);
   const pageSize = 20;
 
   useEffect(() => {
@@ -54,6 +64,8 @@ export function ConversationsPage() {
 
   const loadMessages = async (conv: ConversationSummary) => {
     setSelectedConversation(conv.conversation_id);
+    setSelectedMeta(conv);
+    setMessages([]);
     setMsgLoading(true);
     try {
       const result = await invoke<MessageDetail[]>('get_messages', {
@@ -71,6 +83,50 @@ export function ConversationsPage() {
   const handleSearch = () => {
     setPage(1);
     setSearchTrigger((prev) => prev + 1);
+  };
+
+  const openExportModal = () => {
+    setExportError(null);
+    setExportResult(null);
+    setExportFilePath(null);
+    setExportOpen(true);
+  };
+
+  const closeExportModal = () => {
+    if (exporting) return;
+    setExportOpen(false);
+  };
+
+  const handleExportConversation = async () => {
+    if (!selectedMeta) return;
+    setExporting(true);
+    setExportError(null);
+    setExportResult(null);
+    setExportFilePath(null);
+    try {
+      const title = (selectedMeta.name || selectedMeta.conversation_id || 'conversation')
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .slice(0, 60);
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '');
+      const filePath = await save({
+        defaultPath: `dify_conversation_${title}_${ts}.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (!filePath) return;
+      const result = await invoke<string>('export_conversation', {
+        appId: selectedMeta.app_id || null,
+        conversationId: selectedMeta.conversation_id,
+        includeDetails,
+        includeRawJson,
+        savePath: filePath,
+      });
+      setExportFilePath(filePath);
+      setExportResult(result);
+    } catch (e: any) {
+      setExportError(`导出失败: ${e}`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const formatTime = (ts: number) => {
@@ -220,8 +276,18 @@ export function ConversationsPage() {
 
         {/* Message Detail */}
         <div className="flex-1 bg-white rounded-xl border border-gray-200 overflow-hidden flex flex-col">
-          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
             <span className="text-sm font-medium text-gray-600">消息详情</span>
+            {selectedMeta && (
+              <button
+                onClick={openExportModal}
+                disabled={msgLoading || messages.length === 0}
+                className="flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+              >
+                <Download size={13} />
+                导出会话
+              </button>
+            )}
           </div>
           <div className="flex-1 overflow-auto p-4">
             {!selectedConversation ? (
@@ -392,6 +458,85 @@ export function ConversationsPage() {
           </div>
         </div>
       </div>
+
+      {exportOpen && selectedMeta && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={closeExportModal}>
+          <div className="w-full max-w-md rounded-xl bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+              <h3 className="font-semibold text-gray-900">导出会话</h3>
+              <button onClick={closeExportModal} className="text-gray-400 hover:text-gray-600">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <p className="break-all text-sm text-gray-700">
+                {selectedMeta.name || selectedMeta.conversation_id}
+              </p>
+              <p className="text-xs text-gray-400">
+                导出为一个 JSON 归档文件，包含会话信息和全部消息。
+              </p>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={includeDetails}
+                  onChange={(e) => setIncludeDetails(e.target.checked)}
+                  className="h-4 w-4 accent-blue-600"
+                />
+                包含 workflow / 节点执行详情
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={includeRawJson}
+                  onChange={(e) => setIncludeRawJson(e.target.checked)}
+                  className="h-4 w-4 accent-blue-600"
+                />
+                包含原始 JSON（文件可能较大）
+              </label>
+              {exportError && (
+                <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{exportError}</div>
+              )}
+              {exportResult && (
+                <div className="rounded bg-green-50 px-3 py-2 text-xs text-green-700">
+                  <p className="break-all">{exportResult}</p>
+                  {exportFilePath && (
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        onClick={async () => { try { await openPath(exportFilePath); } catch (e) { console.error(e); } }}
+                        className="flex items-center gap-1 rounded bg-green-600 px-2 py-1 text-white hover:bg-green-700"
+                      >
+                        <ExternalLink size={12} /> 打开文件
+                      </button>
+                      <button
+                        onClick={async () => { try { await revealItemInDir(exportFilePath); } catch (e) { console.error(e); } }}
+                        className="flex items-center gap-1 rounded bg-green-600 px-2 py-1 text-white hover:bg-green-700"
+                      >
+                        <FolderOpen size={12} /> 打开文件夹
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-100 px-5 py-3">
+              <button
+                onClick={closeExportModal}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleExportConversation}
+                disabled={exporting}
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                导出
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

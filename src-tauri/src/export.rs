@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use rust_xlsxwriter::*;
 use serde_json::json;
 
-use crate::models::{DashboardStats, ExportConversationRecord, ExportMessageRecord, FeedbackMessage, NodeDslConfig, NodeEvalRecord, PerformanceStats, StatDistribution};
+use crate::models::{DashboardStats, ExportConversationRecord, ExportMessageRecord, FeedbackMessage, MessageDetail, NodeDslConfig, NodeEvalRecord, PerformanceStats, StatDistribution};
 
 const EXCEL_CELL_MAX_CHARS: usize = 32_767;
 const EXCEL_TRUNCATION_SUFFIX: &str = " [truncated]";
@@ -160,6 +160,55 @@ fn conversation_to_json(m: &ExportConversationRecord) -> serde_json::Value {
         "raw_admin_feedback_stats": m.admin_feedback_stats,
         "raw_status_count": m.status_count,
     })
+}
+
+fn strip_message_value(value: &mut serde_json::Value, include_details: bool, include_raw_json: bool) {
+    let Some(obj) = value.as_object_mut() else { return };
+    if !include_details {
+        obj.remove("workflow_run");
+        obj.remove("node_executions");
+    } else if !include_raw_json {
+        if let Some(workflow_run) = obj.get_mut("workflow_run").and_then(|v| v.as_object_mut()) {
+            workflow_run.remove("raw_json");
+        }
+    }
+    if !include_raw_json {
+        obj.remove("raw_json");
+    }
+}
+
+/// Build a self-contained JSON archive for one conversation.
+pub fn build_conversation_archive(
+    conversation: Option<serde_json::Value>,
+    messages: &[MessageDetail],
+    include_details: bool,
+    include_raw_json: bool,
+) -> Result<String, String> {
+    let conversation = conversation
+        .map(|mut value| {
+            if !include_raw_json {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.remove("raw_json");
+                }
+            }
+            value
+        })
+        .unwrap_or(serde_json::Value::Null);
+
+    let mut message_values = Vec::with_capacity(messages.len());
+    for message in messages {
+        let mut value = serde_json::to_value(message).map_err(|e| e.to_string())?;
+        strip_message_value(&mut value, include_details, include_raw_json);
+        message_values.push(value);
+    }
+
+    let archive = json!({
+        "exported_at": chrono::Local::now().to_rfc3339(),
+        "conversation": conversation,
+        "message_count": messages.len(),
+        "messages": message_values,
+    });
+    serde_json::to_string_pretty(&archive).map_err(|e| e.to_string())
 }
 
 pub fn export_messages_to_json(messages: &[ExportMessageRecord], include_metadata: bool, include_agent_thoughts: bool) -> Result<String, String> {
@@ -1462,6 +1511,50 @@ pub fn export_performance_to_excel(stats: &PerformanceStats, app_name: &str, sav
 mod tests {
     use super::*;
     use crate::models::{NodeDslConfig, NodeEvalRecord};
+
+    #[test]
+    fn strip_message_value_removes_details_and_raw_json() {
+        let mut value = json!({
+            "query": "q",
+            "raw_json": {"big": true},
+            "workflow_run": {"raw_json": {"big": true}},
+            "node_executions": [{"node_id": "n1"}],
+        });
+        strip_message_value(&mut value, false, false);
+        assert!(value.get("workflow_run").is_none());
+        assert!(value.get("node_executions").is_none());
+        assert!(value.get("raw_json").is_none());
+    }
+
+    #[test]
+    fn strip_message_value_keeps_details_but_drops_raw_json() {
+        let mut value = json!({
+            "raw_json": {"big": true},
+            "workflow_run": {"status": "succeeded", "raw_json": {"big": true}},
+            "node_executions": [{"node_id": "n1"}],
+        });
+        strip_message_value(&mut value, true, false);
+        assert_eq!(value["workflow_run"]["status"], json!("succeeded"));
+        assert!(value["workflow_run"].get("raw_json").is_none());
+        assert_eq!(value["node_executions"].as_array().map(|a| a.len()), Some(1));
+        assert!(value.get("raw_json").is_none());
+    }
+
+    #[test]
+    fn build_conversation_archive_shape() {
+        let content = build_conversation_archive(
+            Some(json!({"conversation_id": "c1", "raw_json": {"big": true}})),
+            &[],
+            true,
+            false,
+        )
+        .unwrap();
+        let archive: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(archive["message_count"], json!(0));
+        assert_eq!(archive["conversation"]["conversation_id"], json!("c1"));
+        assert!(archive["conversation"].get("raw_json").is_none());
+        assert!(archive["exported_at"].as_str().is_some());
+    }
 
     fn sample_cfg() -> NodeDslConfig {
         NodeDslConfig {

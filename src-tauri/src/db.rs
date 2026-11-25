@@ -826,6 +826,73 @@ impl Database {
         Ok(ConversationsResult { data, total })
     }
 
+    pub fn get_conversation_archive(
+        &self,
+        app_id: Option<&str>,
+        conversation_id: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let (where_clause, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(aid) = app_id {
+            (
+                "c.conversation_id = ?1 AND c.app_id = ?2",
+                vec![Box::new(conversation_id.to_string()), Box::new(aid.to_string())],
+            )
+        } else {
+            (
+                "c.conversation_id = ?1",
+                vec![Box::new(conversation_id.to_string())],
+            )
+        };
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT c.id, c.app_id, c.conversation_id, c.name, c.inputs, c.status, c.introduction,
+                 c.summary, c.from_source, c.from_end_user_id, c.from_end_user_session_id, c.read_at,
+                 c.annotated, c.model_config, c.user_feedback_stats, c.admin_feedback_stats,
+                 c.status_count, c.raw_json, c.created_at, c.updated_at, a.name
+                 FROM conversations c
+                 LEFT JOIN apps a ON c.app_id = a.id
+                 WHERE {} LIMIT 1",
+                where_clause
+            ))
+            .map_err(|e| e.to_string())?;
+        let record = stmt
+            .query_row(param_refs.as_slice(), |row| {
+                let inputs: String = row.get(4)?;
+                let model_config: String = row.get(13)?;
+                let user_feedback_stats: String = row.get(14)?;
+                let admin_feedback_stats: String = row.get(15)?;
+                let status_count: String = row.get(16)?;
+                let raw_json: String = row.get(17)?;
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "app_id": row.get::<_, String>(1)?,
+                    "app_name": row.get::<_, Option<String>>(20)?,
+                    "conversation_id": row.get::<_, String>(2)?,
+                    "name": row.get::<_, String>(3)?,
+                    "inputs": parse_json(&inputs),
+                    "status": row.get::<_, String>(5)?,
+                    "introduction": row.get::<_, String>(6)?,
+                    "summary": row.get::<_, String>(7)?,
+                    "from_source": row.get::<_, Option<String>>(8)?,
+                    "from_end_user_id": row.get::<_, Option<String>>(9)?,
+                    "from_end_user_session_id": row.get::<_, Option<String>>(10)?,
+                    "read_at": row.get::<_, Option<i64>>(11)?,
+                    "annotated": row.get::<_, i64>(12)? != 0,
+                    "model_config": parse_json(&model_config),
+                    "user_feedback_stats": parse_json(&user_feedback_stats),
+                    "admin_feedback_stats": parse_json(&admin_feedback_stats),
+                    "status_count": parse_json(&status_count),
+                    "raw_json": parse_json(&raw_json),
+                    "created_at": row.get::<_, i64>(18)?,
+                    "updated_at": row.get::<_, i64>(19)?,
+                }))
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(record)
+    }
+
     // ===== Messages =====
     pub fn upsert_message(&self, app_id: &str, conversation_id: &str, msg: &DifyMessageItem) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;

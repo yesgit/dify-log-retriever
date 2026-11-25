@@ -860,6 +860,43 @@ fn export_data(
 }
 
 #[tauri::command]
+fn export_conversation(
+    state: State<AppState>,
+    app_id: Option<String>,
+    conversation_id: String,
+    include_details: bool,
+    include_raw_json: bool,
+    save_path: Option<String>,
+) -> Result<String, String> {
+    let conversation = state
+        .db
+        .get_conversation_archive(app_id.as_deref(), &conversation_id)?;
+    let messages = state.db.get_messages(app_id.as_deref(), &conversation_id)?;
+    if messages.is_empty() {
+        return Err("没有找到匹配的会话数据".to_string());
+    }
+
+    let content = export::build_conversation_archive(
+        conversation,
+        &messages,
+        include_details,
+        include_raw_json,
+    )?;
+
+    if let Some(sp) = save_path {
+        let path = std::path::PathBuf::from(&sp);
+        std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))?;
+        Ok(format!("已导出到: {}", path.display()))
+    } else {
+        let default_filename = format!(
+            "dify_conversation_{}.json",
+            chrono::Local::now().format("%Y%m%d_%H%M%S")
+        );
+        export::save_export_file_with_dialog(&content, &default_filename, "json")
+    }
+}
+
+#[tauri::command]
 fn get_feedback_messages(
     state: State<AppState>,
     app_id: Option<String>,
@@ -1678,6 +1715,7 @@ pub fn run() {
             get_aggregation_status,
             get_performance_stats,
             export_data,
+            export_conversation,
             get_feedback_messages,
             export_feedback_data,
             get_app_node_types,
